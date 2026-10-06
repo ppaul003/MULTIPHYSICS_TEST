@@ -248,7 +248,8 @@ void DiagnosticIdle::render(
                 grid,
                 EuclidRenderer::PLANE_XY,
                 planePosition,
-                false);
+                false
+            );
         }
 
         const vec3 axisOrigin = mix(
@@ -470,13 +471,11 @@ WorkspacePresentation DiagnosticIdle::buildPresentation() const {
 
         p.statusLine = "WARNING: UNIT MEASUREMENT UNAVAILABLE";
         p.statusTone = WorkspaceStatusTone::Warning;
-        p.postStatusLines.push_back("([2]: IMPERIAL selected)");
     }
     else {
 
         p.statusLine ="READY: GLOBAL SHELL CONFIGURATION VALID";
         p.statusTone = WorkspaceStatusTone::Ready;
-        p.postStatusLines.push_back("([2]: METRIC selected)");
     }
 
     // ---------------------------------------------------------
@@ -790,7 +789,7 @@ void DiagnosticIdle::adjustGlobalShellValue(int direction) {
         static constexpr int kBoxSizes[] = { 2, 4, 8, 16, 32 };
         int index = 0;
 
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 5; i++) {
             if (kBoxSizes[i] == m_requestedSimBoxSize) {
                 index = i;
                 break;

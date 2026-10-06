@@ -271,7 +271,7 @@ bool ParticleSimWorkspace::handleInput(
 bool ParticleSimWorkspace::layer3Active() const {
 	return m_active && m_arbiter &&
 		m_arbiter->getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE &&
-		m_arbiter->getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIMULATION;
+		m_arbiter->getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIM;
 }
 
 bool ParticleSimWorkspace::slidersVisible() const {
@@ -1161,9 +1161,7 @@ void ParticleSimWorkspace::adjustLayer1Value(
 	switch (m_layer1Selection) {
 	case Layer1Row::WorkspaceSelection:
 		if (services.arbiter) {
-			services.arbiter->setActiveWorkspace(
-				TheArbiter::WorkspaceId::MULTIPHYSICS_SIM
-			);
+			services.arbiter->cycleMulphyWorkspace(direction);
 		}
 		return;
 

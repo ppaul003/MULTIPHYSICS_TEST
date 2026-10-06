@@ -36,7 +36,8 @@ public:
         GRAPH_3D,
         ANN_DESIGN,
 
-        PARTICLE_SIMULATION,
+        PARTICLE_SIM,
+        ATOMIC_PARTICLES,
         MULTIPHYSICS_SIM
     };
 
@@ -85,6 +86,7 @@ public:
     void setActiveWorkspace(WorkspaceId workspace) { m_navigation.workspace = workspace; }
     WorkspaceId getActiveWorkspace() const { return m_navigation.workspace; }
 
+    void cycleMulphyWorkspace(int direction);
     void requestEnterDomain(WorkspaceDomain domain);
     void requestReturnToGlobalShell(WorkspaceDomain domain);
 

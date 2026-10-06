@@ -43,15 +43,19 @@ TheArbiter::routeKeyboard(const KeyboardInput::KeyEvent& event) const {
         break;
     default: {
         const unsigned char key = static_cast<unsigned char>(std::tolower(event.rawKey));
-        const bool multiphysicsDebugKey =
-            m_navigation.layer == ApplicationLayer::ACTIVE_WORKSPACE &&
-            m_navigation.workspace == WorkspaceId::MULTIPHYSICS_SIM &&
+
+        const bool multiphysicsDebugKey = m_navigation.layer ==
+            ApplicationLayer::ACTIVE_WORKSPACE &&
+            m_navigation.workspace == WorkspaceId::ATOMIC_PARTICLES &&
             (key == 'f' || key == 'v' || key == 'b' || key == 'c' || key == 'g');
+
         if ((event.rawKey >= '0' && event.rawKey <= '9') ||
+
             event.rawKey == 8 || event.rawKey == 127 || multiphysicsDebugKey) {
             result.workspaceInput.action = WorkspaceInputAction::RawKey;
         }
         else {
+
             result.workspaceInput.action = WorkspaceInputAction::None;
         }
         break;
@@ -94,6 +98,41 @@ WorkspacePointerEvent TheArbiter::translateMouseMotion(
     input.dx = dx;
     input.dy = dy;
     return input;
+}
+
+void TheArbiter::cycleMulphyWorkspace(int direction) {
+
+    if (direction == 0) return;
+
+    static constexpr WorkspaceId order[] = {
+
+        WorkspaceId::PARTICLE_SIM,
+        WorkspaceId::ATOMIC_PARTICLES,
+        WorkspaceId::MULTIPHYSICS_SIM
+    };
+
+    constexpr int count =
+        static_cast<int>(sizeof(order) / sizeof(order[0]));
+
+    int currentIndex = 0;
+
+    for (int i = 0; i < count; i++) {
+
+        if (order[i] == m_navigation.workspace) {
+            currentIndex = i;
+            break;
+        }
+    }
+
+    const int step =
+        direction < 0 
+        ? -1 
+        : +1;
+
+    const int nextIndex =
+        (currentIndex + step + count) % count;
+
+    m_navigation.workspace = order[nextIndex];
 }
 
 void TheArbiter::requestEnterDomain(WorkspaceDomain domain) {

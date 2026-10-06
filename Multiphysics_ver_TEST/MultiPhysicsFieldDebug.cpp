@@ -1,4 +1,4 @@
-#include "multiPhysicsSimWorkspace.h"
+#include "atomicParticlesSimWorkspace.h"
 #include "CameraEM.h"
 #include "rendererEM_Euclid.h"
 
@@ -22,13 +22,13 @@ namespace {
     }
 }
 
-bool MultiPhysicsSimWorkspace::layer3Active() const {
+bool AtomicParticlesSimWorkspace::layer3Active() const {
     return m_active && m_arbiter &&
         m_arbiter->getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE &&
         m_arbiter->getActiveWorkspace() == TheArbiter::WorkspaceId::MULTIPHYSICS_SIM;
 }
 
-void MultiPhysicsSimWorkspace::initializeFields() {
+void AtomicParticlesSimWorkspace::initializeFields() {
     m_electronDensity.initialize(m_baseVoxelGrid);
     m_electronTemperature.initialize(m_baseVoxelGrid);
     m_chargeDensity.initialize(m_baseVoxelGrid);
@@ -38,7 +38,7 @@ void MultiPhysicsSimWorkspace::initializeFields() {
     m_curlMagneticField.initialize(m_baseVoxelGrid);
 }
 
-void MultiPhysicsSimWorkspace::clearFieldDebug() {
+void AtomicParticlesSimWorkspace::clearFieldDebug() {
     m_debugElectrodynamics.clear();
     m_electronDensity.clear();
     m_electronTemperature.clear();
@@ -56,7 +56,7 @@ void MultiPhysicsSimWorkspace::clearFieldDebug() {
     m_debugNoticeSeconds = 0.0f;
 }
 
-void MultiPhysicsSimWorkspace::refreshDiagnosticFields() {
+void AtomicParticlesSimWorkspace::refreshDiagnosticFields() {
     // Only explicitly fired debug projectiles source these diagnostics.
     // The production CUDA population is not a self-consistent PIC plasma.
     m_debugElectrodynamics.populateFields(m_baseVoxelGrid, m_electricField,
@@ -64,7 +64,7 @@ void MultiPhysicsSimWorkspace::refreshDiagnosticFields() {
     computeCurl(m_magneticField, m_curlMagneticField);
 }
 
-void MultiPhysicsSimWorkspace::updateFieldDebug(
+void AtomicParticlesSimWorkspace::updateFieldDebug(
     const WorkspaceFrameContext& frame, WorkspaceServices& services) {
     m_debugNoticeSeconds = (std::max)(0.0f, m_debugNoticeSeconds - frame.deltaTime);
     if (m_layer3CameraView == Layer3CameraView::Free && services.camera) {
@@ -79,7 +79,7 @@ void MultiPhysicsSimWorkspace::updateFieldDebug(
     refreshDiagnosticFields();
 }
 
-const VectorField3D* MultiPhysicsSimWorkspace::selectedVectorField() const {
+const VectorField3D* AtomicParticlesSimWorkspace::selectedVectorField() const {
     switch (m_vectorView) {
     case VectorView::Electric: return &m_electricField;
     case VectorView::Magnetic: return &m_magneticField;
@@ -89,7 +89,7 @@ const VectorField3D* MultiPhysicsSimWorkspace::selectedVectorField() const {
     }
 }
 
-const ScalarField3D* MultiPhysicsSimWorkspace::selectedScalarField() const {
+const ScalarField3D* AtomicParticlesSimWorkspace::selectedScalarField() const {
     switch (m_scalarView) {
     case ScalarView::ElectronDensity: return &m_electronDensity;
     case ScalarView::ElectronTemperature: return &m_electronTemperature;
@@ -98,7 +98,7 @@ const ScalarField3D* MultiPhysicsSimWorkspace::selectedScalarField() const {
     }
 }
 
-const char* MultiPhysicsSimWorkspace::vectorViewName() const {
+const char* AtomicParticlesSimWorkspace::vectorViewName() const {
     switch (m_vectorView) {
     case VectorView::Electric: return "ELECTRIC_FIELD [V/m]";
     case VectorView::Magnetic: return "MAGNETIC_FIELD [T]";
@@ -108,7 +108,7 @@ const char* MultiPhysicsSimWorkspace::vectorViewName() const {
     }
 }
 
-const char* MultiPhysicsSimWorkspace::scalarViewName() const {
+const char* AtomicParticlesSimWorkspace::scalarViewName() const {
     switch (m_scalarView) {
     case ScalarView::ElectronDensity: return "ELECTRON_DENSITY [m^-3] (ZERO PLACEHOLDER)";
     case ScalarView::ElectronTemperature: return "ELECTRON_TEMPERATURE [eV] (ZERO PLACEHOLDER)";
@@ -117,7 +117,7 @@ const char* MultiPhysicsSimWorkspace::scalarViewName() const {
     }
 }
 
-void MultiPhysicsSimWorkspace::renderFieldDebug(WorkspaceServices& services) {
+void AtomicParticlesSimWorkspace::renderFieldDebug(WorkspaceServices& services) {
     if (!services.renderer) return;
     FieldDebugRenderer::drawProjectiles(*services.renderer, m_debugElectrodynamics.projectiles());
     if (const auto* field = selectedVectorField())
@@ -125,7 +125,7 @@ void MultiPhysicsSimWorkspace::renderFieldDebug(WorkspaceServices& services) {
     if (const auto* field = selectedScalarField()) FieldDebugRenderer::drawScalar(*field);
 }
 
-bool MultiPhysicsSimWorkspace::handleFieldDebugKey(
+bool AtomicParticlesSimWorkspace::handleFieldDebugKey(
     const WorkspaceInputEvent& input, WorkspaceServices& services) {
     const unsigned char key = static_cast<unsigned char>(std::tolower(input.rawKey));
     if (key != 'f' && key != 'v' && key != 'b' && key != 'c' && key != 'g' &&
@@ -162,7 +162,7 @@ bool MultiPhysicsSimWorkspace::handleFieldDebugKey(
     return true;
 }
 
-bool MultiPhysicsSimWorkspace::handlePointerInput(
+bool AtomicParticlesSimWorkspace::handlePointerInput(
     const WorkspacePointerEvent& input, WorkspaceServices& services) {
     if (!layer3Active()) return false;
     using Type = WorkspacePointerEvent::Type;
@@ -210,7 +210,7 @@ bool MultiPhysicsSimWorkspace::handlePointerInput(
     return false;
 }
 
-bool MultiPhysicsSimWorkspace::setFreeMovementKey(WorkspaceInputAction action, bool pressed) {
+bool AtomicParticlesSimWorkspace::setFreeMovementKey(WorkspaceInputAction action, bool pressed) {
     int index = -1;
     switch (action) {
     case WorkspaceInputAction::Previous: index = 0; break;
@@ -223,25 +223,25 @@ bool MultiPhysicsSimWorkspace::setFreeMovementKey(WorkspaceInputAction action, b
     return true;
 }
 
-bool MultiPhysicsSimWorkspace::handleInputRelease(
+bool AtomicParticlesSimWorkspace::handleInputRelease(
     const WorkspaceInputEvent& input, WorkspaceServices& services) {
     (void)services;
     return setFreeMovementKey(input.action, false);
 }
 
-void MultiPhysicsSimWorkspace::cancelInput(WorkspaceServices& services) {
+void AtomicParticlesSimWorkspace::cancelInput(WorkspaceServices& services) {
     (void)services;
     m_fireClickCaptured = m_freeLookDragging = false;
     std::fill(std::begin(m_freeMovementKeys), std::end(m_freeMovementKeys), false);
 }
 
-void MultiPhysicsSimWorkspace::leaveRuntimeCamera(WorkspaceServices& services) {
+void AtomicParticlesSimWorkspace::leaveRuntimeCamera(WorkspaceServices& services) {
     cancelInput(services);
     if (services.camera && m_layer3CameraView == Layer3CameraView::Free) services.camera->endFreeView();
     m_layer3CameraView = Layer3CameraView::Orbit;
 }
 
-WorkspaceMenuPresentation MultiPhysicsSimWorkspace::buildMenu() const {
+WorkspaceMenuPresentation AtomicParticlesSimWorkspace::buildMenu() const {
     WorkspaceMenuPresentation menu;
     if (!layer3Active()) return menu;
     menu.items.push_back({"- MULTIPHYSICS FIELD / TEST -", 0, false});
@@ -252,7 +252,7 @@ WorkspaceMenuPresentation MultiPhysicsSimWorkspace::buildMenu() const {
     return menu;
 }
 
-bool MultiPhysicsSimWorkspace::handleMenuCommand(int command, WorkspaceServices& services) {
+bool AtomicParticlesSimWorkspace::handleMenuCommand(int command, WorkspaceServices& services) {
     if (!layer3Active()) return false;
     if (command == MenuCameraView && services.camera) {
         cancelInput(services);
@@ -271,14 +271,14 @@ bool MultiPhysicsSimWorkspace::handleMenuCommand(int command, WorkspaceServices&
     return handleFieldDebugKey(input, services);
 }
 
-void MultiPhysicsSimWorkspace::renderOverlay(
+void AtomicParticlesSimWorkspace::renderOverlay(
     const WorkspaceFrameContext& frame, WorkspaceServices& services) {
     (void)services;
     if (frame.displayEnabled && layer3Active() && m_testFireMode)
         FieldDebugRenderer::drawCrosshair(frame.viewportWidth, frame.viewportHeight);
 }
 
-void MultiPhysicsSimWorkspace::appendFieldDebugStatus(WorkspaceRuntimeStatus& status) const {
+void AtomicParticlesSimWorkspace::appendFieldDebugStatus(WorkspaceRuntimeStatus& status) const {
     const char* scale = m_vectorRenderSettings.scale == VectorGlyphScale::Normalized ? "DIRECTION" :
         m_vectorRenderSettings.scale == VectorGlyphScale::RelativeMagnitude ? "RELATIVE" : "LOG";
     const auto* vector = selectedVectorField();

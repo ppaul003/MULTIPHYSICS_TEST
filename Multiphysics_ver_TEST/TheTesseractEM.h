@@ -15,6 +15,7 @@
 
 #include "DiagnosticIdleEM.h"
 #include "ParticleSimWorkspace.h"
+#include "atomicParticlesSimWorkspace.h"
 #include "multiPhysicsSimWorkspace.h"
 
 
@@ -69,6 +70,7 @@ private:
     DiagnosticIdle m_diagnosticIdle;
 
     ParticleSimWorkspace m_particleSimWorkspace;
+    AtomicParticlesSimWorkspace m_atomicParticlesSimWorkspace;
     MultiPhysicsSimWorkspace m_multiPhySim;
 
     IWorkspace* m_activeWorkspace = nullptr;

@@ -133,10 +133,12 @@ private:
     float m_resizePhaseElapsed = 0.0f;
     float m_resizeSliceCenter = 0.5f;
     bool m_slicePausedForResize = false;
+
     static constexpr float kResizeHoldDuration = 0.20f;
-    static constexpr float kResizeStageDuration = 0.80f;
-    static constexpr float kResizeSweepDuration = 2.40f;
-    static constexpr float kSliceRepositionDuration = 0.40f;
+    static constexpr float kResizeStageDuration = 0.50f;
+    static constexpr float kResizeSweepDuration = 1.50f;
+    static constexpr float kSliceRepositionDuration = 0.25f;
+
     int m_transitionGridDimension = 64;
     int m_transitionGridMajorEvery = 8;
     int m_mulphyMajorCount = 8;

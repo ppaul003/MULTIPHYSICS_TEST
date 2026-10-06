@@ -20,7 +20,12 @@ bool Tesseract::initialize(WorkspaceServices services) {
     }
 
     if (!m_particleSimWorkspace.initialize(m_services)) {
-        std::printf("[Tesseract] ERROR: ParticleSimWorkspace initialization failed.\n");
+        printf("[Tesseract] ERROR: ParticleSimWorkspace initialization failed.\n");
+        return false;
+    }
+
+    if (!m_atomicParticlesSimWorkspace.initialize(m_services)) {
+        printf("[Tesseract] ERROR: ATOMIC_PARTICLES initialization failed.\n");
         return false;
     }
 
@@ -31,8 +36,8 @@ bool Tesseract::initialize(WorkspaceServices services) {
 
     m_activeWorkspace = &m_diagnosticIdle;
     m_activeWorkspace->enter(m_services);
-    std::printf("[Tesseract] Workspace socket initialized.\n");
-    std::printf("[Tesseract] Active workspace: DIAGNOSTIC_IDLE\n");
+    printf("[Tesseract] Workspace socket initialized.\n");
+    printf("[Tesseract] Active workspace: DIAGNOSTIC_IDLE\n");
     return true;
 }
 
@@ -43,10 +48,15 @@ void Tesseract::shutdown() {
 
 void Tesseract::update(const WorkspaceFrameContext& frame) {
     if (boxResizeActive()) {
+
         const int previousBox = m_services.renderer->getSimBoxSize();
+
         m_diagnosticIdle.update(frame, m_services);
+
         if (m_services.renderer->getSimBoxSize() != previousBox) {
+
             m_particleSimWorkspace.syncSimulationDomain(m_services);
+            m_atomicParticlesSimWorkspace.syncSimulationDomain(m_services);
             m_multiPhySim.syncSimulationDomain(m_services);
         }
         return;
@@ -264,24 +274,32 @@ void Tesseract::updateDomainTransition(const WorkspaceFrameContext& frame) {
         return;
 
     case Phase::ENTER_CAMERA:
+
         m_diagnosticIdle.update(frame, m_services);
+
         if (m_services.camera) {
+
             m_services.camera->updatePoseTransition(frame.deltaTime);
+
             if (m_services.camera->poseTransitionActive()) return;
             m_services.camera->setBehaviorMode(CameraProcessor::CAM_STANDARD_3D, domainCameraScale());
         }
 
-        m_services.arbiter->setActiveWorkspace(TheArbiter::WorkspaceId::MULTIPHYSICS_SIM);
+        m_services.arbiter->setActiveWorkspace(TheArbiter::WorkspaceId::PARTICLE_SIM);
         m_services.arbiter->setApplicationLayer(Layer::DOMAIN_SELECTION);
+
         m_domainTransitionPhase = Phase::NONE;
         m_transitionDomain = Domain::NONE;
         synchronizeActiveCartridge();
+
         return;
 
     case Phase::EXIT_CAMERA:
         if (m_activeWorkspace)
             m_activeWorkspace->update(frame, m_services);
+
         if (m_services.camera) {
+
             m_services.camera->updatePoseTransition(frame.deltaTime);
             if (m_services.camera->poseTransitionActive()) return;
         }
@@ -323,19 +341,29 @@ void Tesseract::synchronizeActiveCartridge() {
     const char* desiredName = "DIAGNOSTIC_IDLE";
 
     if (!m_services.arbiter->isGlobalShell()) {
+
         using Domain = TheArbiter::WorkspaceDomain;
         using Workspace = TheArbiter::WorkspaceId;
 
         if (m_services.arbiter->getWorkspaceDomain() == Domain::MULPHY_SIM) {
+
             switch (m_services.arbiter->getActiveWorkspace()) {
+
+            case Workspace::PARTICLE_SIM:
+                desired = &m_particleSimWorkspace;
+                desiredName = "PARTICLE_SIMULATION";
+                break;
+
+                case Workspace::ATOMIC_PARTICLES:
+                desired = &m_atomicParticlesSimWorkspace;
+                desiredName = "ATOMIC_PARTICLES";
+                break;
+
             case Workspace::MULTIPHYSICS_SIM:
                 desired = &m_multiPhySim;
                 desiredName = "MULTIPHYSICS_SIM";
                 break;
-            case Workspace::PARTICLE_SIMULATION:
-                desired = &m_particleSimWorkspace;
-                desiredName = "PARTICLE_SIMULATION";
-                break;
+
             default:
                 break;
             }
