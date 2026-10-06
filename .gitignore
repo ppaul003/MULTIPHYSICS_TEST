@@ -1,0 +1,40 @@
+# Visual Studio
+.vs/
+x64/
+Debug/
+Release/
+*.user
+*.suo
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.tlog
+*.log
+*.lastbuildstate
+*.recipe
+*.cache
+*.VC.db
+*.VC.opendb
+*.opendb
+*.sdf
+*.opensdf
+*.ipch
+ipch/
+*.pch
+*.iobj
+*.ipdb
+
+# Executable / generated build outputs
+*.exe
+
+# CUDA / build intermediates
+*.deps
+*.cubin
+*.fatbin
+
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini
