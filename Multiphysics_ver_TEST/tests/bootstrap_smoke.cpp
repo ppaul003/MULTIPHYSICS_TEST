@@ -88,7 +88,15 @@ int main(int argc, char** argv) {
             tick();
             require(arbiter.isGlobalShell() && value(0) == "IDLE", "Startup IDLE");
             require(host.presentation().sections.at(0).rows.size() == 3, "Exactly three shell rows");
-            require(host.presentation().capabilityLines.size() == 6, "Preset and grid status lines");
+            require(
+                host.presentation().statusLine == "SIM SIZE READY 4: (64^3)",
+                "Default simulation size ready"
+            );
+
+            require(
+                host.presentation().statusTone == WorkspaceStatusTone::Ready,
+                "Default simulation size reports ready"
+            );
             key('w'); key('e');
             require(arbiter.isGlobalShell() && !host.domainTransitionActive(), "IDLE activation blocked");
             key('w');

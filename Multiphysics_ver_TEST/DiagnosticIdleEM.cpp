@@ -339,47 +339,79 @@ WorkspacePresentation DiagnosticIdle::buildPresentation() const {
     WorkspacePresentation p;
     p.panelVisible = true;
     p.workspaceName = "LAYER 0 -> GLOBAL SHELL CONFIG";
+
     const bool multiphysics = m_arbiter &&
         m_arbiter->getWorkspaceDomain() == TheArbiter::WorkspaceDomain::MULPHY_SIM;
+
+    // ---------------------------------------------------------
+    // Layer 0 menu rows
+    // ---------------------------------------------------------
     WorkspacePanelSection section;
-    section.rows.push_back({"[1]: DOMAIN SELECTION", selectedEnvironmentName(), true,
-        m_activeShellRow == GlobalShellRow::Environment});
-    section.rows.push_back({multiphysics ? "[2]: SIMULATION MEASUREMENT" : "[2]: SIMULATION BOX SIZE",
-        multiphysics ? selectedUnitMeasurementName() : std::to_string(m_requestedSimBoxSize), true,
-        m_activeShellRow == GlobalShellRow::Configuration});
-    section.rows.push_back({"[3]: E TO CONFIG GLOBAL SHELL", "", true,
-        m_activeShellRow == GlobalShellRow::Configure});
+    section.rows.push_back({
+        "[1]: DOMAIN SELECTION", 
+        selectedEnvironmentName(), 
+        true,
+        m_activeShellRow == GlobalShellRow::Environment
+    });
+
+    section.rows.push_back({
+        multiphysics 
+        ? "[2]: SIMULATION MEASUREMENT" 
+        : "[2]: SIMULATION BOX SIZE",
+        multiphysics 
+        ? selectedUnitMeasurementName() 
+        : std::to_string(m_requestedSimBoxSize), 
+        true,
+        m_activeShellRow == GlobalShellRow::Configuration
+    });
+
+    section.rows.push_back({
+        "[3]: E TO CONFIG GLOBAL SHELL", 
+        "", 
+        true,
+        m_activeShellRow == GlobalShellRow::Configure
+    });
+
     p.sections.push_back(section);
+
+    // ---------------------------------------------------------
+    // IDLE domain
+    // ---------------------------------------------------------
     if (!multiphysics) {
-        p.statusLine = "IDLE: Select MULTIPHYSICS to configure.";
-        p.statusTone = WorkspaceStatusTone::Neutral;
-        for (int preset : {2, 4, 8, 16, 32}) {
-            const bool supported = preset == 4;
-            const bool selected = preset == m_requestedSimBoxSize;
-            std::string label = supported
-                ? (selected ? "SIM SIZE SET/READY 4" : "SIM SIZE READY 4")
-                : "SIM SIZE UNAVAILABLE " + std::to_string(preset);
-            label += supported ? ": production configuration" : ": placeholder";
-            p.capabilityLines.push_back({label, supported
-                ? (selected && m_activeShellRow == GlobalShellRow::Configuration
-                    ? WorkspaceStatusTone::Transition : WorkspaceStatusTone::Ready)
-                : WorkspaceStatusTone::Warning});
+        if (m_requestedSimBoxSize == 4) {
+            p.statusLine = "SIM SIZE READY 4: (64^3)";
+            p.statusTone = WorkspaceStatusTone::Ready;
         }
-        p.capabilityLines.push_back({"CUDA grid: 64^3 | Physical partition: 8^3", WorkspaceStatusTone::Neutral});
+        else {
+            p.statusLine = "SIM SIZE UNAVAILABLE";
+            p.statusTone = WorkspaceStatusTone::Warning;
+        }
     }
+    // ---------------------------------------------------------
+    // MULTIPHYSICS domain
+    // ---------------------------------------------------------
     else if (m_arbiter->getUnitMeasurement() == TheArbiter::UnitMeasurement::IMPERIAL) {
+
         p.statusLine = "WARNING: UNIT MEASUREMENT UNAVAILABLE";
         p.statusTone = WorkspaceStatusTone::Warning;
         p.postStatusLines.push_back("([2]: IMPERIAL selected)");
     }
     else {
-        p.statusLine = "READY: GLOBAL SHELL CONFIGURATION VALID";
+
+        p.statusLine ="READY: GLOBAL SHELL CONFIGURATION VALID";
         p.statusTone = WorkspaceStatusTone::Ready;
         p.postStatusLines.push_back("([2]: METRIC selected)");
-        p.postStatusLines.push_back("Uses supported production preset 4.");
     }
-    p.footerLine1 = "W/S: Select row    A/D: Change value    E/ENTER: Configure";
-    p.footerLine2 = "ESC: Exit";
+
+    // ---------------------------------------------------------
+    // Controls
+    // ---------------------------------------------------------
+    p.footerLine1 =
+        "W/S: Select row    A/D: Change value    E/ENTER: Configure";
+
+    p.footerLine2 =
+        "ESC: Exit";
+
     return p;
 }
 
