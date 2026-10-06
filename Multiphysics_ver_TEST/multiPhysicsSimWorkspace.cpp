@@ -1,4 +1,5 @@
 #include "multiPhysicsSimWorkspace.h"
+#include "SimulationPreset.h"
 
 #include "rendererEM_Euclid.h"
 
@@ -63,13 +64,18 @@ bool MultiPhysicsSimWorkspace::initialize(WorkspaceServices& services) {
 void MultiPhysicsSimWorkspace::syncSimulationDomain(WorkspaceServices& services) {
     if (!services.renderer || !m_particleSystem) return;
     const float boxSize = static_cast<float>(services.renderer->getSimBoxSize());
-    if ((boxSize != 4.0f && boxSize != 8.0f) || boxSize == m_simulationBoxSizeM) return;
+    const auto* preset = findSimulationPreset(services.renderer->getSimBoxSize());
+    if (!preset || !preset->enabled || services.renderer->getGridDimSize() != preset->collisionGridDim) return;
+    const auto currentGrid = m_particleSystem->getGridSize();
+    const uint dimension = static_cast<uint>(preset->collisionGridDim);
+    if (boxSize == m_simulationBoxSizeM && currentGrid.x == dimension &&
+        currentGrid.y == dimension && currentGrid.z == dimension) return;
+    m_particleSystem->setSimulationDomain(boxSize, make_uint3(dimension, dimension, dimension));
     clearRuntime();
     m_simulationBoxSizeM = boxSize;
     m_baseVoxelGrid.dimensions = ivec3(8);
     m_baseVoxelGrid.origin = vec3(-boxSize * 0.5f);
     m_baseVoxelGrid.voxelEdgeM = boxSize / 8.0f;
-    m_particleSystem->setSimulationDomain(boxSize);
     // Fields borrow this stable member. Reinitialize all seven arrays after
     // geometry changes; old diagnostic values/projectiles cannot survive it.
     initializeFields();
@@ -86,6 +92,7 @@ SimulationDomainState MultiPhysicsSimWorkspace::simulationDomainState() const {
     state.collisionOrigin = vec3(origin.x, origin.y, origin.z);
     state.collisionCellSize = vec3(cell.x, cell.y, cell.z);
     state.collisionRadius = m_particleSystem->getParticleRadius();
+    state.collisionCellCount = m_particleSystem->getNumGridCells();
     state.fieldCellCount = m_chargeDensity.size();
     const auto valid = [&](const auto& field) {
         return field.initialized() && &field.grid() == &m_baseVoxelGrid &&
@@ -635,14 +642,11 @@ void MultiPhysicsSimWorkspace::renderConfiguredGrid(
 
     EuclidRenderer::UniformGrid grid;
 
-    grid.dimensions = ivec3(
-        static_cast<int>(kGridSize),
-        static_cast<int>(kGridSize),
-        static_cast<int>(kGridSize)
-    );
+    const auto collisionGrid = m_particleSystem->getGridSize();
+    grid.dimensions = ivec3(collisionGrid.x, collisionGrid.y, collisionGrid.z);
 
     grid.origin = m_baseVoxelGrid.origin;
-    grid.cellSize = vec3(m_simulationBoxSizeM / static_cast<float>(kGridSize));
+    grid.cellSize = vec3(m_simulationBoxSizeM) / vec3(grid.dimensions);
     grid.majorEvery = static_cast<int>(kMajorGridEvery);
 
     EuclidRenderer::GridDisplay display;

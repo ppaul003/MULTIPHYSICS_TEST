@@ -117,6 +117,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="CameraEM.h" />
+    <ClInclude Include="SimulationPreset.h" />
     <ClInclude Include="DebugElectrodynamics.h" />
     <ClInclude Include="DiagnosticIdleEM.h" />
     <ClInclude Include="EuclidEngineEM.h" />

@@ -16,6 +16,9 @@
 #include <cstdlib>
 #include <random>
 #include <filesystem>
+#include <memory>
+#include <limits>
+#include <stdexcept>
 
 #include <GL/glew.h>
 
@@ -293,6 +296,47 @@ void ParticleSystem::_finalize() {
 	glDeleteBuffers(1, (const GLuint*)&m_posVbo);
 	glDeleteBuffers(1, (const GLuint*)&m_radVbo);
 
+}
+
+void ParticleSystem::setSimulationDomain(float boxSize, uint3 gridSize) {
+	const auto powerOfTwo = [](uint dimension) { return dimension && !(dimension & (dimension - 1)); };
+	const unsigned long long xyCells = static_cast<unsigned long long>(gridSize.x) * gridSize.y;
+	if (!m_bInitialized || !std::isfinite(boxSize) || boxSize <= 0 ||
+		!powerOfTwo(gridSize.x) || !powerOfTwo(gridSize.y) || !powerOfTwo(gridSize.z) ||
+		xyCells > (std::numeric_limits<uint>::max)() / gridSize.z)
+		throw std::invalid_argument("Invalid collision grid/domain");
+	const unsigned long long cells = xyCells * gridSize.z;
+	if (gridSize.x != m_gridSize.x || gridSize.y != m_gridSize.y || gridSize.z != m_gridSize.z) {
+		const uint count = static_cast<uint>(cells);
+		const size_t bytes = sizeof(uint) * static_cast<size_t>(count);
+		auto hostStart = std::make_unique<uint[]>(count);
+		auto hostEnd = std::make_unique<uint[]>(count);
+		uint* deviceStart = nullptr;
+		uint* deviceEnd = nullptr;
+		checkCudaErrors(cudaMalloc(reinterpret_cast<void**>(&deviceStart), bytes));
+		const cudaError_t allocation = cudaMalloc(reinterpret_cast<void**>(&deviceEnd), bytes);
+		if (allocation != cudaSuccess) {
+			cudaFree(deviceStart);
+			checkCudaErrors(allocation);
+		}
+		checkCudaErrors(cudaMemset(deviceStart, 0xff, bytes));
+		checkCudaErrors(cudaMemset(deviceEnd, 0, bytes));
+		checkCudaErrors(cudaDeviceSynchronize());
+		checkCudaErrors(cudaFree(m_dCellStart));
+		checkCudaErrors(cudaFree(m_dCellEnd));
+		delete[] m_hCellStart;
+		delete[] m_hCellEnd;
+		m_hCellStart = hostStart.release();
+		m_hCellEnd = hostEnd.release();
+		m_dCellStart = deviceStart;
+		m_dCellEnd = deviceEnd;
+		m_gridSize = m_params.gridSize = gridSize;
+		m_numGridCells = m_params.numCells = count;
+		m_gridSortBits = 0;
+		for (uint value = count - 1; value; value >>= 1) ++m_gridSortBits;
+	}
+	// Particle capacity, VBOs, per-particle radii and physics parameters survive.
+	setSimulationDomain(boxSize);
 }
 
 void ParticleSystem::setSimulationDomain(float boxSize) {
@@ -614,8 +658,7 @@ float* ParticleSystem::getArray(ParticleArray array) {
 	return hdata;
 }
 
-float4 ParticleSystem::
-getSingleParticle(ParticleArray array, uint index) {
+float4 ParticleSystem::getSingleParticle(ParticleArray array, uint index) {
 
 	if (!m_bInitialized || index >= m_numParticles) {
 		return make_float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -704,7 +747,7 @@ void ParticleSystem::setParticle(ParticleArray array, int index, float* data) {
 	}
 
 	const int base = index * 4;
-	for (int c = 0; c < 4; ++c) {
+	for (int c = 0; c < 4; c++) {
 		host[base + c] = data[c];
 	}
 

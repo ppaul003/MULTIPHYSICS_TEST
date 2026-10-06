@@ -2,6 +2,8 @@
 #define NDMSM_DIAGNOSTIC_IDLE_EM_H
 
 #include "IWorkspaceEM.h"
+#include "SimulationPreset.h"
+#include <deque>
 
 class TheArbiter;
 
@@ -10,7 +12,9 @@ public:
     enum class BoxResizePhase {
         Idle, SetHold, ExpandBoundary, WaitForExpandSliceCenter,
         ExpandPlane, ExpandGrid, WaitForShrinkSliceCenter,
-        ShrinkGrid, ShrinkPlane, ShrinkBoundary
+        ShrinkGrid, ShrinkPlane, ShrinkBoundary,
+        WaitForExpandSliceStart, ExpandPlaneSweep, RepositionOuterSlice,
+        RevealOuterGrid, WaitForShrinkSliceStart, ShrinkPlaneSweep
     };
 
     // Read-only snapshot for integration diagnostics; no mutable internals escape.
@@ -19,6 +23,10 @@ public:
         int requestedSize, activeSize;
         float boundarySize, planeSize, gridSize, sliceTravel;
         bool slicePaused;
+        int requestedGridDim, activeGridDim, visualGridDim;
+        int stepFromSize, stepToSize;
+        std::size_t remainingSteps;
+        float innerSize, planePosition, sweepProgress;
     };
     bool boxResizeActive() const { return m_boxResizePhase != BoxResizePhase::Idle; }
     BoxResizeState boxResizeState() const;
@@ -74,11 +82,15 @@ private:
     void cycleUnitMeasurement(int direction);
     void moveGlobalShellCursor(int direction);
     void adjustGlobalShellValue(int direction);
-    static bool isSupportedBoxSize(int size) { return size == 4 || size == 8; }
+    static bool isSupportedBoxSize(int size) { return supportedSimulationPreset(size); }
+    struct TransitionStep { SimulationPreset from; SimulationPreset to; };
+    void startNextResizeStep();
     void beginBoxResize(int targetSize, WorkspaceServices& services);
     void updateBoxResize(float dt, WorkspaceServices& services);
     void completeBoxResize(WorkspaceServices& services);
     void waitForSliceCenter(BoxResizePhase phase);
+    void waitForSliceStart(BoxResizePhase phase);
+    void refreshTransitionGrid(const WorkspaceServices& services);
 
 private:
     static constexpr float kPreviewRotationSpeed = 25.0f;
@@ -106,18 +118,25 @@ private:
     float m_mulphyMajorHoldElapsed = 0.0f;
 
     int m_requestedSimBoxSize = 4;
-    int m_activeSimBoxSize = 4;
-    int m_resizeFromSize = 4;
-    int m_resizeToSize = 4;
+    SimulationPreset m_activePreset = kSimulationPresets[0];
+    TransitionStep m_resizeStep{kSimulationPresets[0], kSimulationPresets[0]};
+    std::deque<TransitionStep> m_resizeSteps;
     BoxResizePhase m_boxResizePhase = BoxResizePhase::Idle;
     float m_visualBoundarySize = 4.0f;
     float m_visualGridSize = 4.0f;
     float m_visualPlaneSize = 4.0f;
+    int m_visualGridDim = 64;
+    float m_visualInnerSize = 4.0f;
+    float m_visualPlanePosition = 0.0f;
+    float m_resizeSliceStart = 0.0f;
+    float m_sweepProgress = 0.0f;
     float m_resizePhaseElapsed = 0.0f;
     float m_resizeSliceCenter = 0.5f;
     bool m_slicePausedForResize = false;
     static constexpr float kResizeHoldDuration = 0.20f;
     static constexpr float kResizeStageDuration = 0.80f;
+    static constexpr float kResizeSweepDuration = 2.40f;
+    static constexpr float kSliceRepositionDuration = 0.40f;
     int m_transitionGridDimension = 64;
     int m_transitionGridMajorEvery = 8;
     int m_mulphyMajorCount = 8;

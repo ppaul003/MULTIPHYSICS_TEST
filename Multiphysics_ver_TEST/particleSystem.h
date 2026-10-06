@@ -76,6 +76,9 @@ public:
 	// --- UNDER CONSTRUCTION ---
 	//void setSimBoundary(float x) { m_params.boundary = x; }
 	void setSimulationDomain(float boxSize);
+	// Reallocates only collision cell tables when the power-of-two grid changes.
+	void setSimulationDomain(float boxSize, uint3 gridSize);
+	uint getNumGridCells() const { return m_numGridCells; }
 	// --- UNDER CONSTRUCTION ---
 
 	void dumpGrid();

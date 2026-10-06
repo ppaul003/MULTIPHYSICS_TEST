@@ -43,8 +43,9 @@ void Tesseract::shutdown() {
 
 void Tesseract::update(const WorkspaceFrameContext& frame) {
     if (boxResizeActive()) {
+        const int previousBox = m_services.renderer->getSimBoxSize();
         m_diagnosticIdle.update(frame, m_services);
-        if (!boxResizeActive()) {
+        if (m_services.renderer->getSimBoxSize() != previousBox) {
             m_particleSimWorkspace.syncSimulationDomain(m_services);
             m_multiPhySim.syncSimulationDomain(m_services);
         }

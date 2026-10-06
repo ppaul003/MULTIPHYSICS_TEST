@@ -13,16 +13,23 @@ bool DiagnosticIdle::initialize(WorkspaceServices& services) {
     m_arbiter = services.arbiter;
     if (!services.renderer || !m_arbiter) return false;
 
-    m_activeSimBoxSize = m_requestedSimBoxSize = services.renderer->getSimBoxSize();
-    m_visualBoundarySize = m_visualGridSize = m_visualPlaneSize = static_cast<float>(m_activeSimBoxSize);
+    const auto* preset = findSimulationPreset(services.renderer->getSimBoxSize());
+    if (!preset || !preset->enabled || preset->collisionGridDim != services.renderer->getGridDimSize()) return false;
+    m_activePreset = *preset;
+    m_requestedSimBoxSize = preset->boxSize;
+    m_visualGridDim = preset->collisionGridDim;
+    m_visualBoundarySize = m_visualGridSize = m_visualPlaneSize = static_cast<float>(m_activePreset.boxSize);
+    refreshTransitionGrid(services);
+    return true;
+}
 
+void DiagnosticIdle::refreshTransitionGrid(const WorkspaceServices& services) {
     m_transitionGridDimension = std::max(1, services.renderer->getGridDimSize());
     m_transitionGridMajorEvery = std::max(1, services.renderer->getGridMajorEvery());
     m_mulphyMajorCount = std::max(
         1,
         (m_transitionGridDimension + m_transitionGridMajorEvery - 1) /
         m_transitionGridMajorEvery);
-    return true;
 }
 
 void DiagnosticIdle::enter(WorkspaceServices& services) {
@@ -255,23 +262,53 @@ void DiagnosticIdle::render(
     }
 
     // Temporary extents never mutate the committed renderer/CUDA domain.
-    const auto visualGrid = [&](float extent) {
+    const auto visualGrid = [&](float extent, int resolution) {
         EuclidRenderer::UniformGrid result = grid;
+        result.dimensions = ivec3(resolution);
         result.origin = vec3(-extent * 0.5f);
-        result.cellSize = vec3(extent / static_cast<float>(gridDim));
+        result.cellSize = vec3(extent / static_cast<float>(resolution));
         return result;
     };
     EuclidRenderer::UniformGrid planeGrid = grid;
     if (boxResizeActive()) {
+        using Phase = BoxResizePhase;
         display.boundary = false;
-        renderer.drawUniformGrid(visualGrid(m_visualGridSize), display);
-        renderer.drawGridBoundary(visualGrid(m_visualBoundarySize));
+        const auto newGrid = visualGrid(m_visualGridSize, m_visualGridDim);
+        const auto oldGrid = visualGrid(static_cast<float>(m_resizeStep.from.boxSize), m_resizeStep.from.collisionGridDim);
+        const float fromHalf = m_resizeStep.from.boxSize * 0.5f;
+        const float toHalf = m_resizeStep.to.boxSize * 0.5f;
+        const bool sweep = m_boxResizePhase == Phase::ExpandPlaneSweep || m_boxResizePhase == Phase::ShrinkPlaneSweep;
+        const bool outerReveal = m_boxResizePhase == Phase::RevealOuterGrid;
+        const bool reposition = m_boxResizePhase == Phase::RepositionOuterSlice;
+        const bool reducingBoundary = m_boxResizePhase == Phase::ShrinkBoundary &&
+            m_resizeStep.from.collisionGridDim != m_resizeStep.to.collisionGridDim;
+        if (sweep) {
+            display.axes = false;
+            renderer.drawUniformGridZRange(oldGrid, m_visualPlanePosition, fromHalf, display);
+            const float lowerZ = m_boxResizePhase == Phase::ExpandPlaneSweep ? -fromHalf : -m_visualGridSize * 0.5f;
+            renderer.drawUniformGridZRange(newGrid, lowerZ, m_visualPlanePosition, display);
+        }
+        else if (reposition || outerReveal) {
+            display.axes = false;
+            // Retain the newly seeded central slabs while revealing the outer
+            // volume from -Z to +Z. Disjoint ranges avoid double blending.
+            if (outerReveal) renderer.drawUniformGridZRange(newGrid, -toHalf, m_visualPlanePosition, display);
+            const float remainingStart = outerReveal ? std::max(-fromHalf, m_visualPlanePosition) : -fromHalf;
+            renderer.drawUniformGridZRange(newGrid, remainingStart, fromHalf, display);
+        }
+        else renderer.drawUniformGrid(newGrid, display);
+        renderer.drawGridBoundary(visualGrid(m_visualBoundarySize, m_visualGridDim));
         // Retain the old inner cube during expansion, and the destination
         // inner cube during shrink, until both boundaries coincide.
-        const float innerSize = static_cast<float>(std::min(m_resizeFromSize, m_resizeToSize));
-        if (m_visualBoundarySize > innerSize)
-            renderer.drawGridBoundary(visualGrid(innerSize));
-        planeGrid = visualGrid(m_visualPlaneSize);
+        if (m_visualBoundarySize > m_visualInnerSize)
+            renderer.drawGridBoundary(visualGrid(m_visualInnerSize, m_visualGridDim));
+        planeGrid = visualGrid(m_visualPlaneSize, m_visualGridDim);
+        if (sweep || reposition || outerReveal || reducingBoundary) {
+            renderer.drawAxisGizmo(vec3(0.0f), m_visualGridSize * 0.2f);
+            renderer.drawGridPlane(planeGrid, EuclidRenderer::PLANE_XY, m_visualPlanePosition, false);
+            glPopMatrix();
+            return;
+        }
     }
     else {
         renderer.drawUniformGrid(grid, display);
@@ -407,18 +444,18 @@ WorkspacePresentation DiagnosticIdle::buildPresentation() const {
     // IDLE domain
     // ---------------------------------------------------------
     if (boxResizeActive()) {
-        p.statusLine = m_resizeToSize > m_resizeFromSize
-            ? "AUTO: Expanding Simulation Box..." : "AUTO: Shrinking Simulation Box...";
+        p.statusLine = m_resizeStep.to.boxSize > m_resizeStep.from.boxSize
+            ? "AUTO: Increasing Simulation Box..." : "AUTO: Decreasing Simulation Box...";
         p.statusTone = p.frameTone = WorkspaceStatusTone::Transition;
         p.statusBlink = p.frameBlink = true;
     }
     else if (!multiphysics) {
-        if (m_requestedSimBoxSize == m_activeSimBoxSize) {
-            p.statusLine = "SIM SIZE READY: " + std::to_string(m_activeSimBoxSize) + " (64^3)";
+        if (m_requestedSimBoxSize == m_activePreset.boxSize) {
+            p.statusLine = "SIM SIZE READY: " + std::to_string(m_activePreset.boxSize) + " (" + std::to_string(m_activePreset.collisionGridDim) + "^3)";
             p.statusTone = WorkspaceStatusTone::Ready;
         }
         else if (isSupportedBoxSize(m_requestedSimBoxSize)) {
-            p.statusLine = "SIM SIZE SELECT: " + std::to_string(m_requestedSimBoxSize) + " (64^3)";
+            p.statusLine = "SIM SIZE SELECT: " + std::to_string(m_requestedSimBoxSize) + " (" + std::to_string(findSimulationPreset(m_requestedSimBoxSize)->collisionGridDim) + "^3)";
             p.statusTone = WorkspaceStatusTone::Transition;
         }
         else {
@@ -455,20 +492,45 @@ WorkspacePresentation DiagnosticIdle::buildPresentation() const {
 }
 
 DiagnosticIdle::BoxResizeState DiagnosticIdle::boxResizeState() const {
-    return {m_boxResizePhase, m_requestedSimBoxSize, m_activeSimBoxSize,
+    const auto* requested = findSimulationPreset(m_requestedSimBoxSize);
+    return {m_boxResizePhase, m_requestedSimBoxSize, m_activePreset.boxSize,
         m_visualBoundarySize, m_visualPlaneSize, m_visualGridSize,
-        m_sliceTravel, m_slicePausedForResize};
+        m_sliceTravel, m_slicePausedForResize,
+        requested ? requested->collisionGridDim : 0, m_activePreset.collisionGridDim, m_visualGridDim,
+        m_resizeStep.from.boxSize, m_resizeStep.to.boxSize, m_resizeSteps.size(),
+        m_visualInnerSize, m_visualPlanePosition, m_sweepProgress};
 }
 
 void DiagnosticIdle::beginBoxResize(int targetSize, WorkspaceServices& services) {
     if (boxResizeActive() || !services.renderer || !isSupportedBoxSize(targetSize) ||
-        targetSize == m_activeSimBoxSize) return;
-    m_resizeFromSize = m_activeSimBoxSize;
-    m_resizeToSize = targetSize;
-    m_visualBoundarySize = m_visualGridSize = m_visualPlaneSize = static_cast<float>(m_resizeFromSize);
+        targetSize == m_activePreset.boxSize) return;
+    m_resizeSteps.clear();
+    const int first = simulationPresetIndex(m_activePreset.boxSize);
+    const int last = simulationPresetIndex(targetSize);
+    const int direction = last > first ? 1 : -1;
+    for (int index = first; index != last; index += direction) {
+        if (!kSimulationPresets[index + direction].enabled) { m_resizeSteps.clear(); return; }
+        m_resizeSteps.push_back({kSimulationPresets[index], kSimulationPresets[index + direction]});
+    }
+    startNextResizeStep();
+}
+
+void DiagnosticIdle::startNextResizeStep() {
+    m_resizeStep = m_resizeSteps.front();
+    m_visualBoundarySize = m_visualGridSize = m_visualPlaneSize = static_cast<float>(m_resizeStep.from.boxSize);
+    m_visualInnerSize = static_cast<float>(std::min(m_resizeStep.from.boxSize, m_resizeStep.to.boxSize));
+    m_visualGridDim = m_resizeStep.from.collisionGridDim;
+    m_visualPlanePosition = 0.0f;
+    m_sweepProgress = 0.0f;
     m_slicePausedForResize = false;
     m_resizePhaseElapsed = 0.0f;
     m_boxResizePhase = BoxResizePhase::SetHold;
+}
+
+void DiagnosticIdle::waitForSliceStart(BoxResizePhase phase) {
+    m_boxResizePhase = phase;
+    m_resizePhaseElapsed = 0.0f;
+    m_resizeSliceStart = (std::floor(m_sliceTravel / 3.0f) + 1.0f) * 3.0f;
 }
 
 void DiagnosticIdle::waitForSliceCenter(BoxResizePhase phase) {
@@ -489,27 +551,73 @@ void DiagnosticIdle::updateBoxResize(float dt, WorkspaceServices& services) {
     };
     const auto moveCamera = [&]() {
         if (services.camera) services.camera->beginRelativeDistanceScale(
-            static_cast<float>(m_resizeToSize) / m_resizeFromSize, kResizeStageDuration);
+            static_cast<float>(m_resizeStep.to.boxSize) / m_resizeStep.from.boxSize, kResizeStageDuration);
     };
     const auto animate = [&](float& extent) {
         const float t = std::clamp(m_resizePhaseElapsed / kResizeStageDuration, 0.0f, 1.0f);
-        extent = mix(static_cast<float>(m_resizeFromSize), static_cast<float>(m_resizeToSize),
+        extent = mix(static_cast<float>(m_resizeStep.from.boxSize), static_cast<float>(m_resizeStep.to.boxSize),
             t * t * (3.0f - 2.0f * t));
         return t >= 1.0f;
     };
+    const bool changesResolution = m_resizeStep.from.collisionGridDim != m_resizeStep.to.collisionGridDim;
     switch (m_boxResizePhase) {
     case Phase::SetHold:
         m_sliceTravel += kSliceCycleSpeed * dt;
         if (m_resizePhaseElapsed < kResizeHoldDuration) break;
-        if (m_resizeToSize > m_resizeFromSize) {
+        if (m_resizeStep.to.boxSize > m_resizeStep.from.boxSize) {
             next(Phase::ExpandBoundary);
+            moveCamera();
+        }
+        else if (changesResolution) {
+            waitForSliceStart(Phase::WaitForShrinkSliceStart);
             moveCamera();
         }
         else waitForSliceCenter(Phase::WaitForShrinkSliceCenter);
         break;
     case Phase::ExpandBoundary:
         m_sliceTravel += kSliceCycleSpeed * dt;
-        if (animate(m_visualBoundarySize)) waitForSliceCenter(Phase::WaitForExpandSliceCenter);
+        if (animate(m_visualBoundarySize)) {
+            if (changesResolution) waitForSliceStart(Phase::WaitForExpandSliceStart);
+            else waitForSliceCenter(Phase::WaitForExpandSliceCenter);
+        }
+        break;
+    case Phase::WaitForExpandSliceStart:
+    case Phase::WaitForShrinkSliceStart: {
+        const float previous = m_sliceTravel;
+        m_sliceTravel += kSliceCycleSpeed * dt;
+        if (previous < m_resizeSliceStart && m_sliceTravel >= m_resizeSliceStart) {
+            m_sliceTravel = m_resizeSliceStart;
+            m_visualPlanePosition = -m_resizeStep.from.boxSize * 0.5f;
+            next(m_resizeStep.to.boxSize > m_resizeStep.from.boxSize ? Phase::ExpandPlaneSweep : Phase::ShrinkPlaneSweep);
+        }
+        break;
+    }
+    case Phase::ExpandPlaneSweep:
+    case Phase::ShrinkPlaneSweep: {
+        m_sweepProgress = std::clamp(m_resizePhaseElapsed / kResizeSweepDuration, 0.0f, 1.0f);
+        const float eased = m_sweepProgress * m_sweepProgress * (3.0f - 2.0f * m_sweepProgress);
+        m_visualPlaneSize = m_visualGridSize = mix(static_cast<float>(m_resizeStep.from.boxSize),
+            static_cast<float>(m_resizeStep.to.boxSize), eased);
+        // Intermediate resolutions are visual only; CUDA sees power-of-two presets at commit.
+        m_visualGridDim = static_cast<int>(std::round(mix(static_cast<float>(m_resizeStep.from.collisionGridDim),
+            static_cast<float>(m_resizeStep.to.collisionGridDim), eased)));
+        m_visualPlanePosition = (m_sweepProgress - 0.5f) * m_resizeStep.from.boxSize;
+        m_sliceTravel = m_resizeSliceStart + m_sweepProgress;
+        if (m_sweepProgress >= 1.0f)
+            next(m_boxResizePhase == Phase::ExpandPlaneSweep ? Phase::RepositionOuterSlice : Phase::ShrinkBoundary);
+        break;
+    }
+    case Phase::RepositionOuterSlice: {
+        const float t = std::clamp(m_resizePhaseElapsed / kSliceRepositionDuration, 0.0f, 1.0f);
+        m_visualPlanePosition = mix(m_resizeStep.from.boxSize * 0.5f, -m_resizeStep.to.boxSize * 0.5f,
+            t * t * (3.0f - 2.0f * t));
+        if (t >= 1.0f) { m_sweepProgress = 0.0f; next(Phase::RevealOuterGrid); }
+        break;
+    }
+    case Phase::RevealOuterGrid:
+        m_sweepProgress = std::clamp(m_resizePhaseElapsed / kResizeSweepDuration, 0.0f, 1.0f);
+        m_visualPlanePosition = (m_sweepProgress - 0.5f) * m_resizeStep.to.boxSize;
+        if (m_sweepProgress >= 1.0f) completeBoxResize(services);
         break;
     case Phase::WaitForExpandSliceCenter:
     case Phase::WaitForShrinkSliceCenter: {
@@ -518,7 +626,7 @@ void DiagnosticIdle::updateBoxResize(float dt, WorkspaceServices& services) {
         if (previous < m_resizeSliceCenter && m_sliceTravel >= m_resizeSliceCenter) {
             m_sliceTravel = m_resizeSliceCenter;
             m_slicePausedForResize = true;
-            next(m_resizeToSize > m_resizeFromSize ? Phase::ExpandPlane : Phase::ShrinkGrid);
+            next(m_resizeStep.to.boxSize > m_resizeStep.from.boxSize ? Phase::ExpandPlane : Phase::ShrinkGrid);
         }
         break;
     }
@@ -538,6 +646,11 @@ void DiagnosticIdle::updateBoxResize(float dt, WorkspaceServices& services) {
         }
         break;
     case Phase::ShrinkBoundary:
+        if (changesResolution) {
+            const float t = std::clamp(m_resizePhaseElapsed / kResizeStageDuration, 0.0f, 1.0f);
+            m_visualPlanePosition = mix(m_resizeStep.from.boxSize * 0.5f, m_resizeStep.to.boxSize * 0.5f,
+                t * t * (3.0f - 2.0f * t));
+        }
         if (animate(m_visualBoundarySize)) completeBoxResize(services);
         break;
     case Phase::Idle:
@@ -546,13 +659,19 @@ void DiagnosticIdle::updateBoxResize(float dt, WorkspaceServices& services) {
 }
 
 void DiagnosticIdle::completeBoxResize(WorkspaceServices& services) {
-    services.renderer->setSimBoxSize(m_resizeToSize);
-    m_activeSimBoxSize = m_resizeToSize;
-    m_visualBoundarySize = m_visualGridSize = m_visualPlaneSize = static_cast<float>(m_activeSimBoxSize);
+    services.renderer->setSimBoxSize(m_resizeStep.to.boxSize);
+    services.renderer->setGridDimSize(m_resizeStep.to.collisionGridDim);
+    m_activePreset = m_resizeStep.to;
+    refreshTransitionGrid(services);
+    m_visualGridDim = m_activePreset.collisionGridDim;
+    m_visualBoundarySize = m_visualGridSize = m_visualPlaneSize = static_cast<float>(m_activePreset.boxSize);
     m_slicePausedForResize = false;
     m_resizePhaseElapsed = 0.0f;
-    m_boxResizePhase = BoxResizePhase::Idle;
-    // Keep m_sliceTravel exactly at the XY center. Normal update resumes +Z.
+    m_resizeSteps.pop_front();
+    if (m_resizeSteps.empty()) m_boxResizePhase = BoxResizePhase::Idle;
+    else startNextResizeStep(); // Keep input locked and AUTO blinking across adjacent commits.
+    // Preserve the slice phase: same-resolution steps resume at the XY center;
+    // resolution-changing steps have completed XY and resume the normal cycle.
 }
 
 void DiagnosticIdle::beginMulphyEnterTransition() {

@@ -301,6 +301,7 @@ struct SimulationDomainState {
     glm::vec3 collisionOrigin = glm::vec3(0.0f);
     glm::vec3 collisionCellSize = glm::vec3(0.0f);
     float collisionRadius = 0.0f;
+    unsigned int collisionCellCount = 0;
     std::size_t fieldCellCount = 0;
     bool fieldGeometryValid = false;
 };
