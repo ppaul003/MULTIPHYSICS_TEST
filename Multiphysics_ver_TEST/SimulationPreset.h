@@ -11,7 +11,7 @@ struct SimulationPreset {
 
 // Ordered ladder: queue construction and runtime geometry share this mapping.
 inline constexpr std::array<SimulationPreset, 4> kSimulationPresets{{
-    {4, 64, true}, {8, 64, true}, {16, 128, true}, {32, 128, false}
+    {4, 64, true}, {8, 64, true}, {16, 128, true}, {32, 128, true}
 }};
 
 inline constexpr int simulationPresetIndex(int boxSize) {

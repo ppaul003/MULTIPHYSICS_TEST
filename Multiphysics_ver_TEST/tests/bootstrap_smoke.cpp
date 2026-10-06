@@ -8,12 +8,24 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
-#include <set>
+#include <algorithm>
+#include <array>
+#include <vector>
 #include <cmath>
 
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
+
+// Test-only read access to existing protected storage; no production API changes.
+class CollisionTableProbe final : public ParticleSystem {
+public:
+    using ParticleSystem::ParticleSystem;
+    std::array<const uint*, 4> cellTables() const {
+        return {m_hCellStart, m_hCellEnd, m_dCellStart, m_dCellEnd};
+    }
+    float boundary() const { return m_params.boundary; }
+};
 
 int main(int argc, char** argv) {
     try {
@@ -37,19 +49,29 @@ int main(int argc, char** argv) {
         while (glGetError() != GL_NO_ERROR) {}
         std::printf("OpenGL: %s\n", glGetString(GL_VERSION));
         {
-            ParticleSystem particles(16, make_uint3(64, 64, 64), true);
+            CollisionTableProbe particles(16, make_uint3(64, 64, 64), true);
             particles.setActiveParticleCount(2);
             particles.setSimulationDomain(8.0f);
             particles.setUniformActiveRadii(0.0063f);
             const auto positionBuffer = particles.getCurrentReadBuffer();
             const auto radiiBuffer = particles.getRadiiBuffer();
             const float radius = particles.getParticleRadius();
-            for (int box : {16, 8, 16}) {
+            for (int box : {16, 32, 16, 8, 16}) {
                 const uint dim = static_cast<uint>(findSimulationPreset(box)->collisionGridDim);
+                const auto previousTables = particles.cellTables();
+                const auto previousGrid = particles.getGridSize();
                 particles.setSimulationDomain(static_cast<float>(box), make_uint3(dim, dim, dim));
+                if (previousGrid.x == dim && previousGrid.y == dim && previousGrid.z == dim)
+                    require(particles.cellTables() == previousTables, "Same-resolution resize preserves all host/device collision table addresses");
+                require(particles.boundary() == box * 0.5f, "Collision boundary follows box size including +/-16");
                 require(particles.getCapacity() == 16 && particles.getCurrentReadBuffer() == positionBuffer &&
                     particles.getRadiiBuffer() == radiiBuffer, "Grid resize preserves particle allocations");
                 require(particles.getNumGridCells() == dim * dim * dim, "Cell tables resize with hash domain");
+                const auto origin = particles.getWorldOrigin();
+                const auto cell = particles.getCellSize();
+                require(origin.x == -box * 0.5f && origin.y == origin.x && origin.z == origin.x &&
+                    cell.x == box / float(dim) && cell.y == cell.x && cell.z == cell.x,
+                    "GPU runtime domain follows box/grid preset including 32/128");
                 require(particles.getParticleRadius() == radius, "Grid reallocation preserves collision radius");
                 float radii[2]{};
                 particles.dumpRadii(radii, 2);
@@ -67,7 +89,7 @@ int main(int argc, char** argv) {
             try { particles.setSimulationDomain(16.0f, make_uint3(96, 96, 96)); }
             catch (const std::invalid_argument&) { rejected = true; }
             require(rejected && particles.getGridSize().x == 128, "Non-power-of-two grid rejected without mutation");
-            std::puts("PASS: CUDA cell reallocation, high-index collision access, VBO/radius/capacity preservation");
+            std::puts("PASS: CUDA cell reallocation, 16/32 table reuse, high-index collision access, VBO/radius/capacity preservation");
         }
         {
             // Destruction order keeps the GL context and renderer alive for CUDA cleanup.
@@ -182,13 +204,20 @@ int main(int argc, char** argv) {
                 std::vector<Phase> phases;
                 int stepFrom = from;
                 int intermediateGridFrames = 0;
+                float centerWaitStart = 0.0f;
+                float pausedSlice = 0.0f;
                 bool boundaryInterpolates = false, planeInterpolates = false, gridInterpolates = false;
                 auto previous = host.boxResizeState();
                 for (int i = 0; i < 5400 && host.boxResizeActive(); ++i) {
                     const auto state = host.boxResizeState();
-                    if (phases.empty() || phases.back() != state.phase) phases.push_back(state.phase);
+                    if (phases.empty() || phases.back() != state.phase) {
+                        phases.push_back(state.phase);
+                        if (state.phase == Phase::WaitForExpandSliceCenter || state.phase == Phase::WaitForShrinkSliceCenter)
+                            centerWaitStart = state.sliceTravel;
+                    }
                     const auto presentation = host.presentation();
                     require(presentation.statusBlink && presentation.frameBlink &&
+                        presentation.statusTone == WorkspaceStatusTone::Transition &&
                         presentation.frameTone == WorkspaceStatusTone::Transition, "Whole transaction blinks orange");
                     require(presentation.statusLine == (target > from ? "AUTO: Increasing Simulation Box..." :
                         "AUTO: Decreasing Simulation Box..."), "AUTO direction text");
@@ -209,10 +238,21 @@ int main(int argc, char** argv) {
                     const int sourceGrid = findSimulationPreset(state.stepFromSize)->collisionGridDim;
                     const int destinationGrid = findSimulationPreset(state.stepToSize)->collisionGridDim;
                     const bool changesGrid = sourceGrid != destinationGrid;
+                    if (!changesGrid) {
+                        require(state.visualGridDim == sourceGrid, "Same-resolution steps retain grid resolution");
+                        require(state.phase != Phase::ExpandPlaneSweep && state.phase != Phase::ShrinkPlaneSweep &&
+                            state.phase != Phase::RevealOuterGrid, "Same-resolution steps never use resolution-changing sweeps");
+                    }
                     if (state.slicePaused) {
                         require(!changesGrid && std::fabs(std::fmod(state.sliceTravel, 3.0f) - 0.5f) < 1e-5f,
                             "Same-resolution steps retain center pause");
+                        require(state.sliceTravel > centerWaitStart, "XY center crossing is strictly future");
+                        if (previous.slicePaused) require(state.sliceTravel == pausedSlice, "Slice remains frozen throughout extent changes");
+                        pausedSlice = state.sliceTravel;
                     }
+                    if (!changesGrid && (state.phase == Phase::ExpandPlane || state.phase == Phase::ExpandGrid ||
+                        state.phase == Phase::ShrinkGrid || state.phase == Phase::ShrinkPlane || state.phase == Phase::ShrinkBoundary))
+                        require(state.slicePaused, "Same-resolution extent changes occur only while paused at center");
                     if (state.phase == Phase::ExpandPlaneSweep || state.phase == Phase::ShrinkPlaneSweep) {
                         require(!state.slicePaused && changesGrid, "Resolution change uses moving XY sweep");
                         require(std::fabs(state.planePosition - (state.sweepProgress - 0.5f) * state.stepFromSize) < 1e-5f,
@@ -241,6 +281,22 @@ int main(int argc, char** argv) {
                     tick();
                     const int committed = renderer.getSimBoxSize();
                     if (committed != stepFrom) {
+                        // Assert each adjacent step's complete identity, even inside a mixed chain.
+                        std::vector<Phase> expectedPhases;
+                        if (!changesGrid && committed > stepFrom)
+                            expectedPhases = {Phase::SetHold, Phase::ExpandBoundary, Phase::WaitForExpandSliceCenter,
+                                Phase::ExpandPlane, Phase::ExpandGrid};
+                        else if (!changesGrid)
+                            expectedPhases = {Phase::SetHold, Phase::WaitForShrinkSliceCenter,
+                                Phase::ShrinkGrid, Phase::ShrinkPlane, Phase::ShrinkBoundary};
+                        else if (committed > stepFrom)
+                            expectedPhases = {Phase::SetHold, Phase::ExpandBoundary, Phase::WaitForExpandSliceStart,
+                                Phase::ExpandPlaneSweep, Phase::RepositionOuterSlice, Phase::RevealOuterGrid};
+                        else
+                            expectedPhases = {Phase::SetHold, Phase::WaitForShrinkSliceStart,
+                                Phase::ShrinkPlaneSweep, Phase::ShrinkBoundary};
+                        require(phases == expectedPhases, "Adjacent step preserves the correct ordered animation path");
+                        phases.clear();
                         commits.push_back(committed);
                         stepFrom = committed;
                         checkDomain(committed); // Includes intermediate commits while lock remains active.
@@ -253,14 +309,11 @@ int main(int argc, char** argv) {
                 for (int size = from; size != target;) { size = target > from ? size * 2 : size / 2; expectedCommits.push_back(size); }
                 require(commits == expectedCommits, "Commits follow adjacent ladder exactly");
                 require(boundaryInterpolates && planeInterpolates && gridInterpolates, "All extents animate");
-                const auto visited = [&](Phase phase) { return std::find(phases.begin(), phases.end(), phase) != phases.end(); };
-                if (from == 16 || target == 16) {
+                const bool crossesResolutionChange = std::min(from, target) <= 8 && std::max(from, target) >= 16;
+                if (crossesResolutionChange) {
                     require(intermediateGridFrames > 5, "Visible grid resolution changes progressively");
-                    if (target > from) require(visited(Phase::WaitForExpandSliceStart) && visited(Phase::ExpandPlaneSweep) &&
-                        visited(Phase::RepositionOuterSlice) && visited(Phase::RevealOuterGrid), "Increasing sweep phases execute");
-                    else require(visited(Phase::WaitForShrinkSliceStart) && visited(Phase::ShrinkPlaneSweep) &&
-                        visited(Phase::ShrinkBoundary), "Decreasing sweep and boundary phases execute");
                 }
+                else require(intermediateGridFrames == 0, "Same-resolution transaction has no progressive resolution reveal");
                 require(renderer.getSimBoxSize() == target && renderer.getGridDimSize() == targetGrid, "Destination box/grid committed");
                 require(host.presentation().statusLine == "SIM SIZE READY: " + presetText &&
                     host.presentation().statusTone == WorkspaceStatusTone::Ready && !host.presentation().statusBlink &&
@@ -277,6 +330,7 @@ int main(int argc, char** argv) {
                 tick();
                 require(host.boxResizeState().sliceTravel > slice && !host.boxResizeState().slicePaused, "Idle slicing resumes");
                 key(commitKey); require(!host.boxResizeActive(), "Same-preset commit is no-op");
+                std::printf("PASS: preset %d -> %d, ordered phases, commits, input lock, camera and geometry\n", from, target);
             };
 
             // Start after the first XY midpoint: the wait must seek a future crossing.
@@ -286,7 +340,7 @@ int main(int argc, char** argv) {
 
             auto unsupported = [&]() {
                 const int active = renderer.getSimBoxSize();
-                for (int unavailable : {2, 32}) {
+                for (int unavailable : {2}) {
                     selectRow("SIMULATION BOX SIZE");
                     for (int i = 0; i < 5 && value(1) != std::to_string(unavailable); ++i) key('d');
                     require(host.presentation().statusTone == WorkspaceStatusTone::Warning, "Unsupported size warning");
@@ -342,17 +396,42 @@ int main(int argc, char** argv) {
             require(arbiter.isGlobalShell(), "Q returns to shell");
             checkDomain(16);
             selectRow("DOMAIN SELECTION"); key('a');
+            resize(32, 'e');
+            unsupported();
+            selectRow("DOMAIN SELECTION"); key('d');
+            selectRow("CONFIG GLOBAL SHELL"); key('e'); settle();
+            require(arbiter.isDomainSelection() && renderer.getSimBoxSize() == 32,
+                "MULTIPHYSICS domain entry preserves committed 32/128");
+            checkDomain(32);
+            runPlasma();
+            checkDomain(32);
+            std::puts("PASS: size-32 plasma runtime, field debug keys and all seven field geometries");
+            selectRow("MULPHY_SIM SELECTION"); key('a'); tick();
+            require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIMULATION, "ParticleSim reachable at size 32");
+            selectRow("CONFIGURE WORKSPACE"); key('e');
+            selectRow("PARTICLE AMOUNT"); key('d');
+            selectRow("PRESS E TO RUN SIM"); key('e'); tick();
+            require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "Nonempty ParticleSim runs at box 32");
+            require(cudaDeviceSynchronize() == cudaSuccess, "ParticleSim CUDA update at box 32");
+            checkDomain(32);
+            std::puts("PASS: size-32 ParticleSim runtime and CUDA synchronization");
+            key('q'); tick(); key('q'); tick(); key('q'); settle();
+            require(arbiter.isGlobalShell(), "Size-32 runtime returns to shell");
+            selectRow("DOMAIN SELECTION"); key('a');
+            resize(16, 13);
             resize(8, 13);
             resize(4, 13);
             resize(16, 'e'); // 4 -> 8 -> 16 under one input lock
             resize(4, 13); // 16 -> 8 -> 4
+            resize(32, 'e'); // 4 -> 8 -> 16 -> 32 under one input lock
+            resize(4, 13); // 32 -> 16 -> 8 -> 4
             unsupported();
             selectRow("DOMAIN SELECTION"); key('d');
             selectRow("CONFIG GLOBAL SHELL"); key(13); settle();
             runPlasma();
             key('q'); settle();
             checkDomain(4);
-            std::puts("PASS: resize sequences, center crossing, input lock, geometry propagation, camera scaling, 4/8/16 chained presets and runtime");
+            std::puts("PASS: resize sequences, center crossing, input lock, geometry propagation, camera scaling, 4/8/16/32 chained presets and runtime");
             host.shutdown();
             std::puts("PASS: Layer 2/3, field debug routing/rendering, CUDA sync, repeated return, ESC routing");
         }
