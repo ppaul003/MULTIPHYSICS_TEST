@@ -113,9 +113,6 @@ bool ParticleSimWorkspace::initialize(WorkspaceServices& services) {
 	if (!services.renderer || !services.arbiter) return false;
 
 	m_arbiter = services.arbiter;
-	m_baseVoxelGrid.dimensions = ivec3(8, 8, 8);
-	m_baseVoxelGrid.origin = vec3(-2.0f, -2.0f, -2.0f);
-	m_baseVoxelGrid.voxelEdgeM = 0.5f;
 	m_radii.assign(kParticleCapacity, 0.0f);
 
 	m_particleSystem = make_unique<ParticleSystem>(
@@ -123,7 +120,7 @@ bool ParticleSimWorkspace::initialize(WorkspaceServices& services) {
 		m_gridDimensions,
 		true
 	);
-	m_particleSystem->setSimulationDomain(kSimulationBoxSizeM);
+	syncSimulationDomain(services);
 	if (!m_particleSystem->setActiveParticleCount(0)) return false;
 	m_runtimeSliders = std::make_unique<RuntimeSliders>();
 	applyLiveParameters();
@@ -132,7 +129,39 @@ bool ParticleSimWorkspace::initialize(WorkspaceServices& services) {
 	return true;
 }
 
+void ParticleSimWorkspace::syncSimulationDomain(WorkspaceServices& services) {
+	if (!services.renderer || !m_particleSystem) return;
+	const float boxSize = static_cast<float>(services.renderer->getSimBoxSize());
+	if ((boxSize != 4.0f && boxSize != 8.0f) || boxSize == m_simulationBoxSizeM) return;
+	m_simulationBoxSizeM = boxSize;
+	m_baseVoxelGrid.dimensions = ivec3(8);
+	m_baseVoxelGrid.origin = vec3(-boxSize * 0.5f);
+	m_baseVoxelGrid.voxelEdgeM = boxSize / 8.0f;
+	m_particleSystem->setSimulationDomain(boxSize);
+	// A domain commit invalidates any population left from the previous box.
+	m_particleSystem->setActiveParticleCount(0);
+	m_activeCount = 0;
+	m_paused = true;
+	m_runtimeEnabled = false;
+	m_elapsedSimulationTime = 0.0f;
+}
+
+SimulationDomainState ParticleSimWorkspace::simulationDomainState() const {
+	SimulationDomainState state;
+	state.physicalGrid = m_baseVoxelGrid;
+	if (!m_particleSystem) return state;
+	const auto dim = m_particleSystem->getGridSize();
+	const auto origin = m_particleSystem->getWorldOrigin();
+	const auto cell = m_particleSystem->getCellSize();
+	state.collisionDimensions = ivec3(dim.x, dim.y, dim.z);
+	state.collisionOrigin = vec3(origin.x, origin.y, origin.z);
+	state.collisionCellSize = vec3(cell.x, cell.y, cell.z);
+	state.collisionRadius = m_particleSystem->getParticleRadius();
+	return state;
+}
+
 void ParticleSimWorkspace::enter(WorkspaceServices& services) {
+	syncSimulationDomain(services);
 	if (!m_arbiter) m_arbiter = services.arbiter;
 	if (!m_initialized) return;
 	setLayer3CameraView(Layer3CameraView::Orbit, services);
@@ -676,7 +705,7 @@ void ParticleSimWorkspace::renderConfiguredGrid(
 	);
 	grid.origin = m_baseVoxelGrid.origin;
 	grid.cellSize = vec3(
-		kSimulationBoxSizeM / static_cast<float>(kGridSize)
+		m_simulationBoxSizeM / static_cast<float>(kGridSize)
 	);
 	grid.majorEvery = static_cast<int>(kMajorGridEvery);
 

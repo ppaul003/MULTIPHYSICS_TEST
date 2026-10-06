@@ -20,6 +20,8 @@ class MultiPhysicsSimWorkspace final : public IWorkspace {
 public:
 
     bool initialize(WorkspaceServices& services) override;
+    void syncSimulationDomain(WorkspaceServices& services);
+    SimulationDomainState simulationDomainState() const;
     void enter(WorkspaceServices& services) override;
     void exit(WorkspaceServices& services) override;
 
@@ -224,16 +226,13 @@ private:
     static constexpr float kHeliumRadius = 0.0047f;
     static constexpr float kArgonRadius = 0.0063f;
 
-    static constexpr float kSimBoxSizeM = 4.0f;
-    static constexpr float kSimHalfBoxM = kSimBoxSizeM * 0.5f;
+    float m_simulationBoxSizeM = 0.0f;
     static constexpr float kMaximumSupportedRadius = 0.0156f;
     static constexpr unsigned int kParticleCapacity = 16384;
     static constexpr unsigned int kMajorGridEvery = 8;
     static constexpr unsigned int kGridSize = 64;
     static constexpr unsigned int kDefaultCountStep = 100;
     static constexpr unsigned int kResetSeed = 1973;
-    static constexpr float kCellSizeM =
-        kSimBoxSizeM / static_cast<float>(kGridSize);
 
     std::unique_ptr<ParticleSystem> m_particleSystem;
     std::string m_statusLine = "READY: MULTIPHY_SIM MODE ONLINE.";

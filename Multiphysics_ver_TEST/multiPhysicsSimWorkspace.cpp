@@ -38,10 +38,6 @@ bool MultiPhysicsSimWorkspace::initialize(WorkspaceServices& services) {
 
     m_arbiter = services.arbiter;
 
-    m_baseVoxelGrid.dimensions = ivec3(8, 8, 8);
-    m_baseVoxelGrid.origin = vec3(-2.0f, -2.0f, -2.0f);
-    m_baseVoxelGrid.voxelEdgeM = 0.5f;
-    initializeFields();
 
     m_radii.assign(kParticleCapacity, 0.0f);
 
@@ -56,7 +52,7 @@ bool MultiPhysicsSimWorkspace::initialize(WorkspaceServices& services) {
     m_particleSystem =
         make_unique<ParticleSystem>(kParticleCapacity, collisionGrid, true);
 
-    m_particleSystem->setSimulationDomain(kSimBoxSizeM);
+    syncSimulationDomain(services);
     if (!m_particleSystem->setActiveParticleCount(0))
         return false;
 
@@ -64,7 +60,45 @@ bool MultiPhysicsSimWorkspace::initialize(WorkspaceServices& services) {
     return true;
 }
 
+void MultiPhysicsSimWorkspace::syncSimulationDomain(WorkspaceServices& services) {
+    if (!services.renderer || !m_particleSystem) return;
+    const float boxSize = static_cast<float>(services.renderer->getSimBoxSize());
+    if ((boxSize != 4.0f && boxSize != 8.0f) || boxSize == m_simulationBoxSizeM) return;
+    clearRuntime();
+    m_simulationBoxSizeM = boxSize;
+    m_baseVoxelGrid.dimensions = ivec3(8);
+    m_baseVoxelGrid.origin = vec3(-boxSize * 0.5f);
+    m_baseVoxelGrid.voxelEdgeM = boxSize / 8.0f;
+    m_particleSystem->setSimulationDomain(boxSize);
+    // Fields borrow this stable member. Reinitialize all seven arrays after
+    // geometry changes; old diagnostic values/projectiles cannot survive it.
+    initializeFields();
+}
+
+SimulationDomainState MultiPhysicsSimWorkspace::simulationDomainState() const {
+    SimulationDomainState state;
+    state.physicalGrid = m_baseVoxelGrid;
+    if (!m_particleSystem) return state;
+    const auto dim = m_particleSystem->getGridSize();
+    const auto origin = m_particleSystem->getWorldOrigin();
+    const auto cell = m_particleSystem->getCellSize();
+    state.collisionDimensions = ivec3(dim.x, dim.y, dim.z);
+    state.collisionOrigin = vec3(origin.x, origin.y, origin.z);
+    state.collisionCellSize = vec3(cell.x, cell.y, cell.z);
+    state.collisionRadius = m_particleSystem->getParticleRadius();
+    state.fieldCellCount = m_chargeDensity.size();
+    const auto valid = [&](const auto& field) {
+        return field.initialized() && &field.grid() == &m_baseVoxelGrid &&
+            field.size() == m_baseVoxelGrid.voxelCount();
+    };
+    state.fieldGeometryValid = valid(m_electronDensity) && valid(m_electronTemperature) &&
+        valid(m_chargeDensity) && valid(m_electricField) && valid(m_magneticField) &&
+        valid(m_currentDensity) && valid(m_curlMagneticField);
+    return state;
+}
+
 void MultiPhysicsSimWorkspace::enter(WorkspaceServices& services) {
+    syncSimulationDomain(services);
     if (!m_arbiter) m_arbiter = services.arbiter;
     if (!m_initialized) return;
 
@@ -608,7 +642,7 @@ void MultiPhysicsSimWorkspace::renderConfiguredGrid(
     );
 
     grid.origin = m_baseVoxelGrid.origin;
-    grid.cellSize = vec3(kCellSizeM, kCellSizeM, kCellSizeM);
+    grid.cellSize = vec3(m_simulationBoxSizeM / static_cast<float>(kGridSize));
     grid.majorEvery = static_cast<int>(kMajorGridEvery);
 
     EuclidRenderer::GridDisplay display;

@@ -175,7 +175,7 @@ void CameraProcessor::setStandard2DTarget() {
     m_cameraRot[2] = 0.0f;
 }
 
-void CameraProcessor::setBehaviorMode(CameraBehaviorMode mode) {
+void CameraProcessor::setBehaviorMode(CameraBehaviorMode mode, float distanceScale) {
     endFreeView();
     m_behaviorMode = mode;
 
@@ -190,6 +190,9 @@ void CameraProcessor::setBehaviorMode(CameraBehaviorMode mode) {
     default:
         setMenuPoseTarget();
         break;
+    }
+    if (std::isfinite(distanceScale) && distanceScale > 0.0f) {
+        for (float& translation : m_cameraTrans) translation *= distanceScale;
     }
 }
 
@@ -230,9 +233,18 @@ void CameraProcessor::beginTransitionToPose(
     m_poseTransitionActive = true;
 }
 
-void CameraProcessor::beginTransitionToStandard3D(float duration) {
+void CameraProcessor::beginRelativeDistanceScale(float scale, float duration) {
+    if (!std::isfinite(scale) || scale <= 0.0f || m_freeViewActive) return;
+    // Scale the displayed orbit translation on all three axes; preserve
+    // displayed rotation and use the same smooth pose interpolation.
     beginTransitionToPose(
-        0.0f, 0.0f, kStandard3DZ,
+        m_cameraTransLag[0] * scale, m_cameraTransLag[1] * scale, m_cameraTransLag[2] * scale,
+        m_cameraRotLag[0], m_cameraRotLag[1], m_cameraRotLag[2], duration);
+}
+
+void CameraProcessor::beginTransitionToStandard3D(float duration, float distanceScale) {
+    beginTransitionToPose(
+        0.0f, 0.0f, kStandard3DZ * distanceScale,
         0.0f, 0.0f, 0.0f,
         duration
     );
@@ -261,9 +273,9 @@ void CameraProcessor::beginTransitionToPreMenu2D(float duration) {
     );
 }
 
-void CameraProcessor::beginTransitionToMenu(float duration) {
+void CameraProcessor::beginTransitionToMenu(float duration, float distanceScale) {
     beginTransitionToPose(
-        kMenuX, kMenuY, kMenuZ,
+        kMenuX * distanceScale, kMenuY * distanceScale, kMenuZ * distanceScale,
         kMenuPitch, 0.0f, 0.0f,
         duration
     );

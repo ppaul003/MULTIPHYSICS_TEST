@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "CameraEM.h"
+#include "rendererEM_Euclid.h"
 
 using namespace std;
 
@@ -41,6 +42,14 @@ void Tesseract::shutdown() {
 }
 
 void Tesseract::update(const WorkspaceFrameContext& frame) {
+    if (boxResizeActive()) {
+        m_diagnosticIdle.update(frame, m_services);
+        if (!boxResizeActive()) {
+            m_particleSimWorkspace.syncSimulationDomain(m_services);
+            m_multiPhySim.syncSimulationDomain(m_services);
+        }
+        return;
+    }
     processNavigationRequest();
 
     if (domainTransitionActive()) {
@@ -80,7 +89,7 @@ void Tesseract::render(const WorkspaceFrameContext& frame) {
 }
 
 bool Tesseract::handleInput(const WorkspaceInputEvent& event) {
-    if (domainTransitionActive()) return true;
+    if (domainTransitionActive() || boxResizeActive()) return true;
 
     if (!m_activeWorkspace) return false;
 
@@ -94,12 +103,13 @@ bool Tesseract::handleInput(const WorkspaceInputEvent& event) {
 }
 
 bool Tesseract::handleInputRelease(const WorkspaceInputEvent& event) {
+    if (boxResizeActive()) return true;
     return m_activeWorkspace &&
         m_activeWorkspace->handleInputRelease(event, m_services);
 }
 
 bool Tesseract::handlePointerInput(const WorkspacePointerEvent& event) {
-    if (domainTransitionActive()) return true;
+    if (domainTransitionActive() || boxResizeActive()) return true;
     return m_activeWorkspace &&
         m_activeWorkspace->handlePointerInput(event, m_services);
 }
@@ -120,7 +130,7 @@ WorkspaceMenuPresentation Tesseract::menu() const {
 }
 
 bool Tesseract::handleMenuCommand(int command) {
-    if (domainTransitionActive() || !m_activeWorkspace) return false;
+    if (domainTransitionActive() || boxResizeActive() || !m_activeWorkspace) return false;
     const bool handled = m_activeWorkspace->handleMenuCommand(command, m_services);
     processNavigationRequest();
     if (!domainTransitionActive()) synchronizeActiveCartridge();
@@ -179,7 +189,7 @@ WorkspacePresentation Tesseract::presentation() const {
 
 void Tesseract::processNavigationRequest() {
     if (!m_services.arbiter) return;
-    if (domainTransitionActive()) return;
+    if (domainTransitionActive() || boxResizeActive()) return;
     if (!m_services.arbiter->hasNavigationRequest()) return;
 
     const TheArbiter::NavigationRequest request =
@@ -208,7 +218,7 @@ void Tesseract::processNavigationRequest() {
         if (request.domain == Domain::MULPHY_SIM) {
             m_domainTransitionPhase = DomainTransitionPhase::EXIT_CAMERA;
             if (m_services.camera)
-                m_services.camera->beginTransitionToMenu(kCameraTransitionDuration);
+                m_services.camera->beginTransitionToMenu(kCameraTransitionDuration, domainCameraScale());
             else {
                 m_domainTransitionPhase = DomainTransitionPhase::EXIT_DOMAIN_VISUAL;
                 m_diagnosticIdle.beginMulphyReturnTransition();
@@ -249,7 +259,7 @@ void Tesseract::updateDomainTransition(const WorkspaceFrameContext& frame) {
 
         m_domainTransitionPhase = Phase::ENTER_CAMERA;
         if (m_services.camera)
-            m_services.camera->beginTransitionToStandard3D(kCameraTransitionDuration);
+            m_services.camera->beginTransitionToStandard3D(kCameraTransitionDuration, domainCameraScale());
         return;
 
     case Phase::ENTER_CAMERA:
@@ -257,7 +267,7 @@ void Tesseract::updateDomainTransition(const WorkspaceFrameContext& frame) {
         if (m_services.camera) {
             m_services.camera->updatePoseTransition(frame.deltaTime);
             if (m_services.camera->poseTransitionActive()) return;
-            m_services.camera->setBehaviorMode(CameraProcessor::CAM_STANDARD_3D);
+            m_services.camera->setBehaviorMode(CameraProcessor::CAM_STANDARD_3D, domainCameraScale());
         }
 
         m_services.arbiter->setActiveWorkspace(TheArbiter::WorkspaceId::MULTIPHYSICS_SIM);
@@ -288,7 +298,7 @@ void Tesseract::updateDomainTransition(const WorkspaceFrameContext& frame) {
         m_services.arbiter->setActiveWorkspace(TheArbiter::WorkspaceId::DIAGNOSTIC);
 
         if (m_services.camera)
-            m_services.camera->setBehaviorMode(CameraProcessor::CAM_MENU_PREVIEW);
+            m_services.camera->setBehaviorMode(CameraProcessor::CAM_MENU_PREVIEW, domainCameraScale());
 
         m_domainTransitionPhase = Phase::NONE;
         m_transitionDomain = Domain::NONE;
@@ -299,6 +309,10 @@ void Tesseract::updateDomainTransition(const WorkspaceFrameContext& frame) {
     default:
         return;
     }
+}
+
+float Tesseract::domainCameraScale() const {
+    return m_services.renderer ? static_cast<float>(m_services.renderer->getSimBoxSize()) / 4.0f : 1.0f;
 }
 
 void Tesseract::synchronizeActiveCartridge() {

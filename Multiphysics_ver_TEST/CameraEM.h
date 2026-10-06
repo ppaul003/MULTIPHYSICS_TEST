@@ -20,14 +20,15 @@ public:
     // The displayed (lagged orbit or free-view) camera pose, independent of GL state.
     bool getCenterViewRay(glm::vec3& originWorld, glm::vec3& directionWorld) const;
 
-    void setBehaviorMode(CameraBehaviorMode mode);
+    void setBehaviorMode(CameraBehaviorMode mode, float distanceScale = 1.0f);
     CameraBehaviorMode getBehaviorMode() const { return m_behaviorMode; }
 
-    void beginTransitionToStandard3D(float duration = 0.75f);
+    void beginTransitionToStandard3D(float duration = 0.75f, float distanceScale = 1.0f);
     void beginTransitionToCentered2D(float duration = 0.45f);
     void beginTransitionToStandard2D(float duration = 0.30f);
     void beginTransitionToPreMenu2D(float duration = 0.45f);
-    void beginTransitionToMenu(float duration = 0.75f);
+    void beginTransitionToMenu(float duration = 0.75f, float distanceScale = 1.0f);
+    void beginRelativeDistanceScale(float scale, float duration);
 
     void updatePoseTransition(float deltaTime);
     bool poseTransitionActive() const { return m_poseTransitionActive; }

@@ -294,6 +294,17 @@ struct SpawnDensityRegionGrid3D {
     }
 };
 
+// Immutable-by-value diagnostic snapshot of a workspace's committed geometry.
+struct SimulationDomainState {
+    SpatialVoxelGrid3D physicalGrid;
+    glm::ivec3 collisionDimensions = glm::ivec3(0);
+    glm::vec3 collisionOrigin = glm::vec3(0.0f);
+    glm::vec3 collisionCellSize = glm::vec3(0.0f);
+    float collisionRadius = 0.0f;
+    std::size_t fieldCellCount = 0;
+    bool fieldGeometryValid = false;
+};
+
 class EuclidRenderer;
 class TheArbiter;
 class ViewPort;

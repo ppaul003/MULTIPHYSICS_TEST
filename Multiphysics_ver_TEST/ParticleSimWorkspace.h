@@ -20,6 +20,8 @@ public:
 	~ParticleSimWorkspace() override;
 
 	bool initialize(WorkspaceServices& services) override;
+	void syncSimulationDomain(WorkspaceServices& services);
+	SimulationDomainState simulationDomainState() const;
 
 	void enter(WorkspaceServices& services) override;
 	void exit(WorkspaceServices& services) override;
@@ -203,7 +205,7 @@ private:
 	const char* layer3CameraViewName() const;
 
 private:
-	static constexpr float kSimulationBoxSizeM = 4.0f;
+	float m_simulationBoxSizeM = 0.0f;
 	static constexpr float kMaximumSupportedRadius = 0.0156f;
 	static constexpr unsigned int kParticleCapacity = 16384;
 	static constexpr unsigned int kGridSize = 64;

@@ -52,10 +52,15 @@ public:
     bool domainTransitionActive() const {
         return m_domainTransitionPhase != DomainTransitionPhase::NONE;
     }
+    bool boxResizeActive() const { return m_diagnosticIdle.boxResizeActive(); }
+    DiagnosticIdle::BoxResizeState boxResizeState() const { return m_diagnosticIdle.boxResizeState(); }
+    SimulationDomainState particleDomainState() const { return m_particleSimWorkspace.simulationDomainState(); }
+    SimulationDomainState multiphysicsDomainState() const { return m_multiPhySim.simulationDomainState(); }
 
 private:
     void synchronizeActiveCartridge();
     void activateCartridge(IWorkspace* workspace, const char* name);
+    float domainCameraScale() const;
 
     static constexpr float kCameraTransitionDuration = 0.75f;
     static constexpr float kReadyHoldDuration = 0.35f;

@@ -7,6 +7,21 @@ class TheArbiter;
 
 class DiagnosticIdle : public IWorkspace {
 public:
+    enum class BoxResizePhase {
+        Idle, SetHold, ExpandBoundary, WaitForExpandSliceCenter,
+        ExpandPlane, ExpandGrid, WaitForShrinkSliceCenter,
+        ShrinkGrid, ShrinkPlane, ShrinkBoundary
+    };
+
+    // Read-only snapshot for integration diagnostics; no mutable internals escape.
+    struct BoxResizeState {
+        BoxResizePhase phase;
+        int requestedSize, activeSize;
+        float boundarySize, planeSize, gridSize, sliceTravel;
+        bool slicePaused;
+    };
+    bool boxResizeActive() const { return m_boxResizePhase != BoxResizePhase::Idle; }
+    BoxResizeState boxResizeState() const;
     enum class VisualTransitionState {
         Idle = 0,
 
@@ -59,6 +74,11 @@ private:
     void cycleUnitMeasurement(int direction);
     void moveGlobalShellCursor(int direction);
     void adjustGlobalShellValue(int direction);
+    static bool isSupportedBoxSize(int size) { return size == 4 || size == 8; }
+    void beginBoxResize(int targetSize, WorkspaceServices& services);
+    void updateBoxResize(float dt, WorkspaceServices& services);
+    void completeBoxResize(WorkspaceServices& services);
+    void waitForSliceCenter(BoxResizePhase phase);
 
 private:
     static constexpr float kPreviewRotationSpeed = 25.0f;
@@ -86,6 +106,18 @@ private:
     float m_mulphyMajorHoldElapsed = 0.0f;
 
     int m_requestedSimBoxSize = 4;
+    int m_activeSimBoxSize = 4;
+    int m_resizeFromSize = 4;
+    int m_resizeToSize = 4;
+    BoxResizePhase m_boxResizePhase = BoxResizePhase::Idle;
+    float m_visualBoundarySize = 4.0f;
+    float m_visualGridSize = 4.0f;
+    float m_visualPlaneSize = 4.0f;
+    float m_resizePhaseElapsed = 0.0f;
+    float m_resizeSliceCenter = 0.5f;
+    bool m_slicePausedForResize = false;
+    static constexpr float kResizeHoldDuration = 0.20f;
+    static constexpr float kResizeStageDuration = 0.80f;
     int m_transitionGridDimension = 64;
     int m_transitionGridMajorEvery = 8;
     int m_mulphyMajorCount = 8;
