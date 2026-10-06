@@ -5,61 +5,80 @@
 #include <GL/freeglut.h>
 
 using namespace std;
+using namespace glm;
 
 namespace {
     constexpr float kMenuX = 1.65f;
     constexpr float kMenuY = 0.00f;
-    constexpr float kMenuZ = -8.00f;
     constexpr float kMenuPitch = 18.0f;
+    constexpr float kMenuZ = -8.00f;
+    constexpr float kStandard3DZ = -5.0f;
+    
 
-    constexpr float kStandard3DZ = -5.00f;
+    // -- new values for zoom
+    constexpr float kOrbitZoomMinDistance = 0.75f;
+    constexpr float kOrbitZoomMaxDistance = 160.0f;
 
     constexpr float kStandard2DX = 1.40f;
     constexpr float kStandard2DY = 0.00f;
     constexpr float kStandard2DZ = -6.00f;
     constexpr float kPreMenu2DZ = -8.00f;
-    constexpr float kDegreesToRadians = 0.01745329251994329577f;
+
     constexpr float kFreeMoveSpeed = 2.0f;
     constexpr float kFreeLookDegreesPerPixel = 0.20f;
+    constexpr float kDegreesToRadians = 0.01745329251994329577f;
 
     void multiplyRotation(const float* left, const float* right, float* result) {
+
         float product[9]{};
-        for (int row = 0; row < 3; ++row) {
-            for (int col = 0; col < 3; ++col) {
-                for (int k = 0; k < 3; ++k) {
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < 3; col++) {
+                for (int k = 0; k < 3; k++) {
                     product[row * 3 + col] += left[row * 3 + k] * right[k * 3 + col];
                 }
             }
         }
-        std::copy(product, product + 9, result);
+        copy(product, product + 9, result);
     }
 
     void makeViewRotation(const float* angles, float* result) {
-        const float cx = std::cos(angles[0] * kDegreesToRadians);
-        const float sx = std::sin(angles[0] * kDegreesToRadians);
-        const float cy = std::cos(angles[1] * kDegreesToRadians);
-        const float sy = std::sin(angles[1] * kDegreesToRadians);
-        const float cz = std::cos(angles[2] * kDegreesToRadians);
-        const float sz = std::sin(angles[2] * kDegreesToRadians);
+
+        const float cx = cos(angles[0] * kDegreesToRadians);
+        const float sx = sin(angles[0] * kDegreesToRadians);
+        const float cy = cos(angles[1] * kDegreesToRadians);
+        const float sy = sin(angles[1] * kDegreesToRadians);
+        const float cz = cos(angles[2] * kDegreesToRadians);
+        const float sz = sin(angles[2] * kDegreesToRadians);
+
         const float rx[9]{1, 0, 0, 0, cx, -sx, 0, sx, cx};
         const float ry[9]{cy, 0, sy, 0, 1, 0, -sy, 0, cy};
         const float rz[9]{cz, -sz, 0, sz, cz, 0, 0, 0, 1};
+
         multiplyRotation(rx, ry, result);
         multiplyRotation(result, rz, result);
     }
 
     void normalizeAxis(float* axis) {
-        const float length = std::sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+
+        const float length = sqrt(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+
         if (length > 0.0f) {
             for (int c = 0; c < 3; ++c) axis[c] /= length;
         }
     }
 
     void orthonormalizeRotation(float* rotation) {
+
         normalizeAxis(rotation);
-        const float projection = rotation[0] * rotation[3] + rotation[1] * rotation[4] + rotation[2] * rotation[5];
-        for (int c = 0; c < 3; ++c) rotation[3 + c] -= projection * rotation[c];
+
+        const float projection = rotation[0] * rotation[3] + 
+            rotation[1] * rotation[4] + rotation[2] * rotation[5];
+
+        for (int c = 0; c < 3; c++)
+            rotation[3 + c] -= projection * rotation[c];
+
         normalizeAxis(rotation + 3);
+
         rotation[6] = rotation[1] * rotation[5] - rotation[2] * rotation[4];
         rotation[7] = rotation[2] * rotation[3] - rotation[0] * rotation[5];
         rotation[8] = rotation[0] * rotation[4] - rotation[1] * rotation[3];
@@ -87,10 +106,8 @@ void CameraProcessor::updateLag() {
     if (m_poseTransitionActive || m_freeViewActive) return;
 
     for (int c = 0; c < 3; c++) {
-        m_cameraTransLag[c] +=
-            (m_cameraTrans[c] - m_cameraTransLag[c]) * kInertia;
-        m_cameraRotLag[c] +=
-            (m_cameraRot[c] - m_cameraRotLag[c]) * kInertia;
+        m_cameraTransLag[c] += (m_cameraTrans[c] - m_cameraTransLag[c]) * kInertia;
+        m_cameraRotLag[c] += (m_cameraRot[c] - m_cameraRotLag[c]) * kInertia;
     }
 }
 
@@ -101,12 +118,12 @@ void CameraProcessor::applyCameraTransform() {
 }
 
 void CameraProcessor::buildViewMatrix(float* view) const {
-    std::fill(view, view + 16, 0.0f);
+    fill(view, view + 16, 0.0f);
     view[15] = 1.0f;
     if (m_freeViewActive) {
         // OpenGL expects column-major storage for the view matrix [ R | -R * eye ].
-        for (int row = 0; row < 3; ++row) {
-            for (int col = 0; col < 3; ++col) {
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < 3; col++) {
                 view[col * 4 + row] = m_freeRotation[row * 3 + col];
                 view[12 + row] -= m_freeRotation[row * 3 + col] * m_freeEye[col];
             }
@@ -117,31 +134,38 @@ void CameraProcessor::buildViewMatrix(float* view) const {
     // Same T * Rx * Ry * Rz transform as the original OpenGL orbit path.
     float rotation[9];
     makeViewRotation(m_cameraRotLag, rotation);
-    for (int row = 0; row < 3; ++row) {
-        for (int col = 0; col < 3; ++col)
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 3; col++)
             view[col * 4 + row] = rotation[row * 3 + col];
         view[12 + row] = m_cameraTransLag[row];
     }
 }
 
 bool CameraProcessor::getCenterViewRay(
-    glm::vec3& originWorld, glm::vec3& directionWorld) const {
+    vec3& originWorld, vec3& directionWorld) const {
     float view[16];
     buildViewMatrix(view);
 
     // Inverse rigid transform: eye = R^T * -translation and forward = R^T * -Z.
     // This is the ixformPoint/ixform convention; direction excludes translation.
-    glm::vec3 origin;
-    glm::vec3 direction;
-    for (int c = 0; c < 3; ++c) {
+    vec3 origin;
+    vec3 direction;
+
+    for (int c = 0; c < 3; c++) {
+
         origin[c] = -(view[c * 4] * view[12] +
             view[c * 4 + 1] * view[13] + view[c * 4 + 2] * view[14]);
+
         direction[c] = -view[c * 4 + 2];
-        if (!std::isfinite(origin[c]) || !std::isfinite(direction[c])) return false;
+
+        if (!isfinite(origin[c]) || !isfinite(direction[c]))
+            return false;
     }
     const float length = std::sqrt(direction.x * direction.x +
         direction.y * direction.y + direction.z * direction.z);
-    if (!std::isfinite(length) || length <= 0.0f) return false;
+
+    if (!isfinite(length) || length <= 0.0f)
+        return false;
 
     originWorld = origin;
     directionWorld = direction / length;
@@ -149,6 +173,7 @@ bool CameraProcessor::getCenterViewRay(
 }
 
 void CameraProcessor::setMenuPoseTarget() {
+
     m_cameraTrans[0] = kMenuX;
     m_cameraTrans[1] = kMenuY;
     m_cameraTrans[2] = kMenuZ;
@@ -183,15 +208,17 @@ void CameraProcessor::setBehaviorMode(CameraBehaviorMode mode, float distanceSca
     case CAM_STANDARD_3D:
         setStandard3DTarget();
         break;
+
     case CAM_STANDARD_2D:
         setStandard2DTarget();
         break;
+
     case CAM_MENU_PREVIEW:
     default:
         setMenuPoseTarget();
         break;
     }
-    if (std::isfinite(distanceScale) && distanceScale > 0.0f) {
+    if (isfinite(distanceScale) && distanceScale > 0.0f) {
         for (float& translation : m_cameraTrans) translation *= distanceScale;
     }
 }
@@ -212,6 +239,7 @@ void CameraProcessor::beginTransitionToPose(
     m_poseTargetTrans[0] = tx;
     m_poseTargetTrans[1] = ty;
     m_poseTargetTrans[2] = tz;
+
     m_poseTargetRot[0] = rx;
     m_poseTargetRot[1] = ry;
     m_poseTargetRot[2] = rz;
@@ -220,12 +248,16 @@ void CameraProcessor::beginTransitionToPose(
     m_poseTransitionDuration = duration;
 
     if (duration <= 0.0f) {
+
         for (int c = 0; c < 3; c++) {
+
             m_cameraTrans[c] = m_poseTargetTrans[c];
             m_cameraRot[c] = m_poseTargetRot[c];
+
             m_cameraTransLag[c] = m_poseTargetTrans[c];
             m_cameraRotLag[c] = m_poseTargetRot[c];
         }
+
         m_poseTransitionActive = false;
         return;
     }
@@ -234,15 +266,18 @@ void CameraProcessor::beginTransitionToPose(
 }
 
 void CameraProcessor::beginRelativeDistanceScale(float scale, float duration) {
-    if (!std::isfinite(scale) || scale <= 0.0f || m_freeViewActive) return;
+    if (!isfinite(scale) || scale <= 0.0f || m_freeViewActive) return;
+
     // Scale the displayed orbit translation on all three axes; preserve
     // displayed rotation and use the same smooth pose interpolation.
     beginTransitionToPose(
         m_cameraTransLag[0] * scale, m_cameraTransLag[1] * scale, m_cameraTransLag[2] * scale,
-        m_cameraRotLag[0], m_cameraRotLag[1], m_cameraRotLag[2], duration);
+        m_cameraRotLag[0], m_cameraRotLag[1], m_cameraRotLag[2], duration
+    );
 }
 
 void CameraProcessor::beginTransitionToStandard3D(float duration, float distanceScale) {
+
     beginTransitionToPose(
         0.0f, 0.0f, kStandard3DZ * distanceScale,
         0.0f, 0.0f, 0.0f,
@@ -296,10 +331,8 @@ void CameraProcessor::updatePoseTransition(float deltaTime) {
     const float t = smoothStep01(rawT);
 
     for (int c = 0; c < 3; c++) {
-        const float translation = lerp(
-            m_poseStartTrans[c], m_poseTargetTrans[c], t);
-        const float rotation = lerp(
-            m_poseStartRot[c], m_poseTargetRot[c], t);
+        const float translation = lerp( m_poseStartTrans[c], m_poseTargetTrans[c], t);
+        const float rotation = lerp(m_poseStartRot[c], m_poseTargetRot[c], t);
 
         m_cameraTrans[c] = translation;
         m_cameraTransLag[c] = translation;
@@ -308,12 +341,14 @@ void CameraProcessor::updatePoseTransition(float deltaTime) {
     }
 
     if (rawT >= 1.0f) {
+
         for (int c = 0; c < 3; c++) {
             m_cameraTrans[c] = m_poseTargetTrans[c];
             m_cameraTransLag[c] = m_poseTargetTrans[c];
             m_cameraRot[c] = m_poseTargetRot[c];
             m_cameraRotLag[c] = m_poseTargetRot[c];
         }
+
         m_poseTransitionElapsed = m_poseTransitionDuration;
         m_poseTransitionActive = false;
     }
@@ -332,24 +367,35 @@ void CameraProcessor::orbit(float dx, float dy) {
 void CameraProcessor::zoom(float amount) {
     if (!zoomEnabled()) return;
 
-    const float distance = max(1.0f, fabs(m_cameraTrans[2]));
+    const float distance = max(
+        kOrbitZoomMinDistance, 
+        fabs(m_cameraTrans[2])
+    );
 
     m_cameraTrans[2] += amount * distance;
-    m_cameraTrans[2] = clamp(m_cameraTrans[2], -30.0f, -1.5f);
+
+    m_cameraTrans[2] = clamp(
+        m_cameraTrans[2], 
+        -kOrbitZoomMaxDistance, 
+        -kOrbitZoomMinDistance
+    );
 }
 
 void CameraProcessor::beginFreeView() {
     if (m_freeViewActive || !orbitEnabled()) return;
 
     // Capture the displayed pose, not the still-converging orbit target.
-    for (int c = 0; c < 3; ++c) {
+    for (int c = 0; c < 3; c++) {
         m_savedOrbitTrans[c] = m_cameraTransLag[c];
         m_savedOrbitRot[c] = m_cameraRotLag[c];
     }
+
     makeViewRotation(m_savedOrbitRot, m_freeRotation);
-    for (int c = 0; c < 3; ++c) {
+
+    for (int c = 0; c < 3; c++) {
+
         m_freeEye[c] = 0.0f;
-        for (int row = 0; row < 3; ++row) {
+        for (int row = 0; row < 3; row++) {
             m_freeEye[c] -= m_freeRotation[row * 3 + c] * m_savedOrbitTrans[row];
         }
     }
@@ -359,12 +405,13 @@ void CameraProcessor::beginFreeView() {
 void CameraProcessor::endFreeView() {
     if (!m_freeViewActive) return;
 
-    for (int c = 0; c < 3; ++c) {
+    for (int c = 0; c < 3; c++) {
         m_cameraTrans[c] = m_cameraTransLag[c] = m_savedOrbitTrans[c];
         m_cameraRot[c] = m_cameraRotLag[c] = m_savedOrbitRot[c];
         m_savedOrbitTrans[c] = m_savedOrbitRot[c] = m_freeEye[c] = 0.0f;
     }
-    std::fill(m_freeRotation, m_freeRotation + 9, 0.0f);
+
+    fill(m_freeRotation, m_freeRotation + 9, 0.0f);
     m_freeViewActive = false;
 }
 
@@ -372,9 +419,10 @@ void CameraProcessor::moveFree(float forward, float right, float deltaTime) {
     if (!m_freeViewActive || deltaTime <= 0.0f) return;
 
     // Diagonal movement has the same speed as movement along one local axis.
-    const float inputLength = std::sqrt(forward * forward + right * right);
+    const float inputLength = sqrt(forward * forward + right * right);
     const float distance = kFreeMoveSpeed * deltaTime / (std::max)(1.0f, inputLength);
-    for (int c = 0; c < 3; ++c) {
+
+    for (int c = 0; c < 3; c++) {
         m_freeEye[c] += (right * m_freeRotation[c] - forward * m_freeRotation[6 + c]) * distance;
     }
 }

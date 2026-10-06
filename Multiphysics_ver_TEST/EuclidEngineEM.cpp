@@ -20,6 +20,8 @@
 #include <algorithm>
 #include <cstdio>
 
+using namespace std;
+
 #ifdef _WIN32
 
 namespace {
@@ -69,8 +71,8 @@ namespace {
                     IMAGE_ICON,
                     largeWidth,
                     largeHeight,
-                    LR_LOADFROMFILE)
-                );
+                    LR_LOADFROMFILE
+                ));
 
         g_vitruGenSmallIcon =
             static_cast<HICON>(
@@ -81,8 +83,7 @@ namespace {
                     smallWidth,
                     smallHeight,
                     LR_LOADFROMFILE
-                )
-                );
+                ));
 
         if (!g_vitruGenLargeIcon &&
             !g_vitruGenSmallIcon) {
@@ -150,9 +151,9 @@ EuclidEngine::~EuclidEngine() {
 }
 
 bool EuclidEngine::init(int argc, char** argv) {
-    std::printf("ANAHEIM SYSTEMS DYNAMICS\n");
-    std::printf("Simulation Module Test & Debug\n");
-    std::printf("Development Ver. TEST\n\n");
+    printf("ANAHEIM SYSTEMS DYNAMICS\n");
+    printf("Simulation Module Test & Debug\n");
+    printf("Development Ver. TEST\n\n");
 
     s_instance = this;
 
@@ -211,26 +212,43 @@ void EuclidEngine::initRenderer() {
     if (m_renderer) return;
 
     m_renderer = new EuclidRenderer();
-    m_renderer->setWindowSize(m_viewport.getWidth(), m_viewport.getHeight());
-    m_renderer->setFOV(60.0f);
-    m_renderer->setSimBoxSize(4);
 
-    std::printf("[EuclidEngine] Grid-only EuclidRenderer initialized.\n");
+    m_renderer->setWindowSize(
+        m_viewport.getWidth(), 
+        m_viewport.getHeight()
+    );
+
+    m_renderer->setFOV(60.0f);
+
+    // Default Layer-0 simulation preset:
+    // 32-unit domain with 128^3 collision grid.
+    m_renderer->setSimBoxSize(32);
+    m_renderer->setGridDimSize(128);
+    m_renderer->setGridMajorEvery(16);
+
+    printf(
+        "[EuclidEngine] Grid-only EuclidRenderer initialized."
+        "32 / 127^3.\n"
+    );
 }
 
 bool EuclidEngine::initWorkspaceHost() {
     if (!m_renderer) return false;
 
     WorkspaceServices services;
+
     services.renderer = m_renderer;
     services.arbiter = &m_arbiter;
     services.viewport = &m_viewport;
     services.camera = &m_camera;
 
+    const float startupCameraScale =
+        static_cast<float>(m_renderer->getSimBoxSize()) / 4.0f;
+
     m_arbiter.setApplicationLayer(TheArbiter::ApplicationLayer::GLOBAL_SHELL);
     m_arbiter.setWorkspaceDomain(TheArbiter::WorkspaceDomain::NONE);
     m_arbiter.setActiveWorkspace(TheArbiter::WorkspaceId::DIAGNOSTIC);
-    m_camera.setBehaviorMode(CameraProcessor::CAM_MENU_PREVIEW);
+    m_camera.setBehaviorMode(CameraProcessor::CAM_MENU_PREVIEW, startupCameraScale);
 
     return m_tesseract.initialize(services);
 }
@@ -359,6 +377,7 @@ void EuclidEngine::sMainMenu(int value) {
 }
 
 void EuclidEngine::sMenuStatus(int status, int, int) {
+
     if (!s_instance) return;
     s_instance->m_menuOpen = status == GLUT_MENU_IN_USE;
     if (s_instance->m_menuOpen) s_instance->cancelInput();
@@ -390,6 +409,7 @@ void EuclidEngine::sClose() {
 }
 
 void EuclidEngine::onReshape(int w, int h) {
+
     cancelInput();
     m_viewport.resize(w, h);
     m_viewport.applyPerspective(60.0f);
@@ -401,6 +421,7 @@ void EuclidEngine::onReshape(int w, int h) {
 }
 
 void EuclidEngine::onDisplay() {
+
     glEnable(GL_DEPTH_TEST);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -420,10 +441,13 @@ void EuclidEngine::onDisplay() {
 }
 
 void EuclidEngine::onKeyboard(unsigned char key, int x, int y) {
+
     const KeyboardInput::KeyEvent event = m_keyboard.onKey(key, x, y);
+    const unsigned char physicalKey = static_cast<unsigned char>(tolower(key));
+
     TheArbiter::ArbiterResult result = m_arbiter.routeKeyboard(event);
-    const unsigned char physicalKey = static_cast<unsigned char>(std::tolower(key));
     result.workspaceInput.repeated = m_keysDown[physicalKey];
+
     m_keysDown[physicalKey] = true;
 
     if (result.arbiterCommand == TheArbiter::ArbiterCommand::CMD_EXIT) {
@@ -438,12 +462,14 @@ void EuclidEngine::onKeyboard(unsigned char key, int x, int y) {
 }
 
 void EuclidEngine::onKeyboardUp(unsigned char key, int x, int y) {
-    m_keysDown[static_cast<unsigned char>(std::tolower(key))] = false;
+
+    m_keysDown[static_cast<unsigned char>(tolower(key))] = false;
     const auto result = m_arbiter.routeKeyboard(m_keyboard.onKey(key, x, y));
     if (result.hasWorkspaceInput) m_tesseract.handleInputRelease(result.workspaceInput);
 }
 
 void EuclidEngine::cancelInput() {
+
     m_tesseract.cancelInput();
     m_mouse.onButton(GLUT_LEFT_BUTTON, GLUT_UP, 0, 0);
     m_workspacePointerCaptured = false;
@@ -455,14 +481,16 @@ void EuclidEngine::onMouse(int button, int state, int x, int y) {
     m_mouse.onButton(button, state, x, y);
 
     // Never manipulate camera during automatic transition.
-    if (m_tesseract.domainTransitionActive())
-        return;
+    if (m_tesseract.domainTransitionActive()) return;
 
     const bool wasCaptured = m_workspacePointerCaptured;
     const bool handled = m_tesseract.handlePointerInput(
-        m_arbiter.translateMouseButton(button, state, x, y));
+        m_arbiter.translateMouseButton(button, state, x, y)
+    );
+
     if (button == GLUT_LEFT_BUTTON)
         m_workspacePointerCaptured = state == GLUT_DOWN && handled;
+
     if (handled || (button == GLUT_LEFT_BUTTON && wasCaptured)) {
         glutPostRedisplay();
         return;
@@ -476,11 +504,11 @@ void EuclidEngine::onMouse(int button, int state, int x, int y) {
     if (state == GLUT_DOWN) {
 
         if (button == 3 && m_camera.zoomEnabled()) {
-            m_camera.zoom(+0.05f);
+            m_camera.zoom(+kWheelZoomStep);
         }
 
         else if (button == 4 && m_camera.zoomEnabled()) {
-            m_camera.zoom(-0.05f);
+            m_camera.zoom(-kWheelZoomStep);
         }
     }
 

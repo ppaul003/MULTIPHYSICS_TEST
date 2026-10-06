@@ -303,10 +303,10 @@ private:
 	
 
 private:
-	static constexpr float kSimBoxSize = 4.0f;
+	static constexpr float kSimBoxSize = 32.0f;
 	static constexpr float kSimHalfBox = kSimBoxSize * 0.5f;
-	static constexpr int kMajorEvery = 8;
-	static constexpr int kGridDim = 16;
+	static constexpr int kMajorEvery = 16;
+	static constexpr int kGridDim = 128;
 	static constexpr float kCellSize =
 		kSimBoxSize / static_cast<float>(kGridDim);
 
@@ -321,9 +321,9 @@ private:
 	GridPlane m_workPlane = PLANE_XY;
 	DisplayMode m_displayMode = PARTICLE_SPHERES;
 
-	int m_simBox = 4;
-	int m_gridDimSize = 64;
-	int m_gridMajorEvery = 8;
+	int m_simBox = 32;
+	int m_gridDimSize = 128;
+	int m_gridMajorEvery = 16;
 
     float m_fov = 60.0f;
     int m_windowW = 1920;

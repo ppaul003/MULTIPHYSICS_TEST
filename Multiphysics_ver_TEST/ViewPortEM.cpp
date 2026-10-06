@@ -18,7 +18,7 @@ void ViewPort::applyPerspective(float fovDegrees) {
 
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluPerspective(m_fov, getAspect(), 0.01, 100.0);
+    gluPerspective(m_fov, getAspect(), 0.01, 512.0);
 
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
@@ -58,7 +58,7 @@ void ViewPort::endOverlay2D() {
 void ViewPort::drawText2D(float x, float y, const char* text, void* font) {
     if (!text) return;
     glRasterPos2f(x, y);
-    for (const char* p = text; *p; ++p)
+    for (const char* p = text; *p; p++)
         glutBitmapCharacter(font, *p);
 }
 

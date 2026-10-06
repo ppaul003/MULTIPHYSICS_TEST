@@ -99,15 +99,45 @@ private:
     static constexpr float kTransitionSliceSpeed = 1.40f;
     static constexpr float kMulphyMajorHoldDuration = 0.12f;
     static constexpr float kMulphyAxisTransitionDuration = 0.45f;
+    static constexpr float kResizeHoldDuration = 0.20f;
+    static constexpr float kResizeStageDuration = 0.50f;
+    static constexpr float kResizeSweepDuration = 1.50f;
+    static constexpr float kSliceRepositionDuration = 0.25f;
 
     TheArbiter* m_arbiter = nullptr;
 
+    std::deque<TransitionStep> m_resizeSteps;
     GlobalShellRow m_activeShellRow = GlobalShellRow::Environment;
     VisualTransitionState m_visualTransition = VisualTransitionState::Idle;
-    
+    BoxResizePhase m_boxResizePhase = BoxResizePhase::Idle;
+
+    TransitionStep m_resizeStep{ 
+        kSimulationPresets[3], 
+        kSimulationPresets[3] 
+    };
+
+    SimulationPreset m_activePreset = kSimulationPresets[3];
+
     bool m_mulphyEnterComplete = false;
     bool m_mulphyReturnComplete = false;
+    bool m_slicePausedForResize = false;
 
+    int m_requestedSimBoxSize = 32;
+    int m_visualGridDim = 128;
+    int m_transitionGridDimension = 128;
+    int m_transitionGridMajorEvery = 8;
+    int m_mulphyMajorCount = 8;
+    int m_mulphyTargetMajorIndex = 1;
+
+    float m_visualBoundarySize = 32.0f;
+    float m_visualGridSize = 32.0f;
+    float m_visualPlaneSize = 32.0f;
+    float m_visualInnerSize = 32.0f;
+    float m_visualPlanePosition = 0.0f;
+    float m_resizeSliceStart = 0.0f;
+    float m_sweepProgress = 0.0f;
+    float m_resizePhaseElapsed = 0.0f;
+    float m_resizeSliceCenter = 0.5f;
     float m_previewRotationDegrees = 0.0f;
     float m_sliceTravel = 0.0f;
     float m_targetRotationDegrees = 0.0f;
@@ -116,33 +146,6 @@ private:
     float m_mulphyClearedProgress = 0.0f;
     float m_mulphyAxisProgress = 0.0f;
     float m_mulphyMajorHoldElapsed = 0.0f;
-
-    int m_requestedSimBoxSize = 4;
-    SimulationPreset m_activePreset = kSimulationPresets[0];
-    TransitionStep m_resizeStep{kSimulationPresets[0], kSimulationPresets[0]};
-    std::deque<TransitionStep> m_resizeSteps;
-    BoxResizePhase m_boxResizePhase = BoxResizePhase::Idle;
-    float m_visualBoundarySize = 4.0f;
-    float m_visualGridSize = 4.0f;
-    float m_visualPlaneSize = 4.0f;
-    int m_visualGridDim = 64;
-    float m_visualInnerSize = 4.0f;
-    float m_visualPlanePosition = 0.0f;
-    float m_resizeSliceStart = 0.0f;
-    float m_sweepProgress = 0.0f;
-    float m_resizePhaseElapsed = 0.0f;
-    float m_resizeSliceCenter = 0.5f;
-    bool m_slicePausedForResize = false;
-
-    static constexpr float kResizeHoldDuration = 0.20f;
-    static constexpr float kResizeStageDuration = 0.50f;
-    static constexpr float kResizeSweepDuration = 1.50f;
-    static constexpr float kSliceRepositionDuration = 0.25f;
-
-    int m_transitionGridDimension = 64;
-    int m_transitionGridMajorEvery = 8;
-    int m_mulphyMajorCount = 8;
-    int m_mulphyTargetMajorIndex = 1;
 };
 
 #endif

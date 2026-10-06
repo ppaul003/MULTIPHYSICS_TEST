@@ -77,11 +77,16 @@ private:
     void requestExit();
 
 private:
-    static constexpr unsigned int kWidth = 1920;
-    static constexpr unsigned int kHeight = 1080;
     static constexpr int MENU_NOP = -1;
     static constexpr int MENU_QUIT = 27;
     static constexpr int MENU_WORKSPACE_COMMAND_BASE = 10000;
+
+    static constexpr unsigned int kWidth = 1920;
+    static constexpr unsigned int kHeight = 1080;
+
+    static constexpr float kWheelZoomStep = 0.10f;
+    
+    EuclidRenderer* m_renderer = nullptr;
 
     TheArbiter m_arbiter;
     Tesseract m_tesseract;
@@ -90,20 +95,21 @@ private:
     KeyboardInput m_keyboard;
     MouseInput m_mouse;
 
-    EuclidRenderer* m_renderer = nullptr;
-    int m_menuId = 0;
-    std::vector<int> m_workspaceMenuCommands;
     bool m_menuOpen = false;
     bool m_menuDirty = false;
+    
+    bool m_exiting = false;
+    bool m_cleaned = false;
+    bool m_displayEnabled = true;
     bool m_workspacePointerCaptured = false;
     bool m_keysDown[256]{};
+
+    int m_menuId = 0;
+    std::vector<int> m_workspaceMenuCommands;
+
 #ifdef _WIN32
     HWND m_windowHandle = nullptr;
 #endif
-
-    bool m_displayEnabled = true;
-    bool m_exiting = false;
-    bool m_cleaned = false;
 };
 
 #endif
