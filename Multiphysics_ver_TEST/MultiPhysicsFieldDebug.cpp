@@ -25,7 +25,7 @@ namespace {
 bool AtomicParticlesSimWorkspace::layer3Active() const {
     return m_active && m_arbiter &&
         m_arbiter->getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE &&
-        m_arbiter->getActiveWorkspace() == TheArbiter::WorkspaceId::MULTIPHYSICS_SIM;
+        m_arbiter->getActiveWorkspace() == TheArbiter::WorkspaceId::ATOMIC_PARTICLES;
 }
 
 void AtomicParticlesSimWorkspace::initializeFields() {
