@@ -10,6 +10,7 @@
 #include <vector_types.h>
 
 #include "IWorkspaceEM.h"
+#include "RuntimeSubLayerTraversal.h"
 #include "TextEntry.h"
 #include "TheArbiterEM.h"
 #include "particleSystem.h"
@@ -276,7 +277,7 @@ private:
 
     WorkspaceStatusTone m_statusTone = WorkspaceStatusTone::Ready;
 
-    bool m_subLayerPanelOpen = false;
+    RuntimeSubLayerTraversal m_subLayers;
     bool m_displaySliders = false;
     bool m_initialized = false;
     bool m_active = false;

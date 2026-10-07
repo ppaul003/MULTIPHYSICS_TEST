@@ -96,7 +96,7 @@ void AtomicParticlesSimWorkspace::refreshDiagnosticFields() {
 void AtomicParticlesSimWorkspace::updateFieldDebug(
     const WorkspaceFrameContext& frame, WorkspaceServices& services) {
     m_debugNoticeSeconds = (std::max)(0.0f, m_debugNoticeSeconds - frame.deltaTime);
-    if (m_layer3CameraView == Layer3CameraView::Free && services.camera) {
+    if (!m_subLayers.panelOpen() && m_layer3CameraView == Layer3CameraView::Free && services.camera) {
         services.camera->moveFree(
             static_cast<float>(m_freeMovementKeys[0]) - static_cast<float>(m_freeMovementKeys[1]),
             static_cast<float>(m_freeMovementKeys[3]) - static_cast<float>(m_freeMovementKeys[2]),
@@ -206,6 +206,7 @@ bool AtomicParticlesSimWorkspace::handlePointerInput(
     using Type = WorkspacePointerEvent::Type;
     using Button = WorkspacePointerEvent::Button;
     if (input.button == Button::Right) return false;
+    if (m_subLayers.panelOpen()) return true;
     if (input.type == Type::Button && input.button == Button::Left) {
         if (!input.pressed) {
             const bool captured = m_fireClickCaptured || m_freeLookDragging || m_testFireMode;

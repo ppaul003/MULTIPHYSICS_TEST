@@ -374,6 +374,136 @@ int main(int argc, char** argv) {
             checkDomain(16);
             require(renderer.getSimBoxSize() == 16, "Domain entry preserves committed 16/128 preset");
 
+            auto checkSubLayers = [&](bool atomic) {
+                const std::string mode = atomic ? "ATOMIC_PARTICLES" : "PARTICLE_SIM";
+                const std::string context = atomic ? mode : "PARTICLE_SIMULATION";
+                auto checkPanel = [&](int layer, int selected, bool open = true) {
+                    const auto p = host.presentation();
+                    require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE,
+                        "Sub-layers remain ACTIVE_WORKSPACE");
+                    require(p.panelLayout == WorkspacePanelLayout::SubLayer && p.panelVisible == open,
+                        "Sub-layer layout and visibility");
+                    require(p.workspaceName == mode + " MODE", "Correct workspace heading");
+                    const auto n = std::to_string(layer);
+                    require(p.subLayerLabel == "SUB-LAYER_" + n + " -> SETUP_" + n, "Sub-layer setup label");
+                    require(p.runtimeStatus.contextLine == context + ": " +
+                        (open ? p.subLayerLabel : "LAYER 3 RUNTIME"), "Runtime context tracks panel state");
+                    require(p.sections.size() == 2 && p.sections[0].heading == "SL" + n + "_SELECT:",
+                        "Generic options section");
+                    int rowIndex = 0, selectedCount = 0;
+                    for (const auto& section : p.sections) for (const auto& row : section.rows) {
+                        require(row.selectable && row.selected == (rowIndex == selected), "Exactly correct selectable row");
+                        if (row.selected) ++selectedCount;
+                        ++rowIndex;
+                    }
+                    require(rowIndex == (layer == 0 ? 4 : 5) && selectedCount == 1, "Correct row count and single selection");
+                    require(p.sections[1].rows[0].label == (layer == 3 ? "[4]: EXIT_SUB_LAYERS"
+                        : "[4]: SUB-LAYER_" + std::to_string(layer + 1)), "Correct next/exit label");
+                    if (layer > 0) require(p.sections[1].rows[1].label == "[5]: SUB-LAYER_" + std::to_string(layer - 1),
+                        "Correct previous label");
+                    require(p.runtimeStatus.helpLine.find(open ? "W/S: SELECT    E: ACTIVATE" : "TAB: SUB_LAYER PANEL DISPLAY")
+                        != std::string::npos, "Context-sensitive traversal help");
+                    tick();
+                };
+                checkPanel(0, 0, false);
+                const auto running = host.presentation().runtimeStatus.objectLine;
+                key(9); checkPanel(0, 0);
+                for (int layer = 0; layer < 4; ++layer) {
+                    const int last = layer == 0 ? 3 : 4;
+                    key('w'); checkPanel(layer, last);
+                    key('s'); checkPanel(layer, 0);
+                    for (int row = 0; row < 3; ++row) {
+                        key('a'); key('d'); key('e'); checkPanel(layer, row);
+                        require(host.presentation().runtimeStatus.objectLine == running, "Placeholder inputs preserve runtime");
+                        key('s');
+                    }
+                    checkPanel(layer, 3);
+                    key(9); checkPanel(layer, 3, false);
+                    key(9); checkPanel(layer, 3);
+                    // Exercise all backward edges, then return to this layer.
+                    if (layer > 0) {
+                        key('s'); key('e'); checkPanel(layer - 1, 0);
+                        key('s'); key('s'); key('s'); key('e'); checkPanel(layer, 0);
+                        key('s'); key('s'); key('s');
+                    }
+                    key('e');
+                    if (layer < 3) checkPanel(layer + 1, 0);
+                    else checkPanel(0, 0, false);
+                }
+                require(host.presentation().runtimeStatus.objectLine == running, "Exit panel preserves running simulation");
+                key(9); checkPanel(0, 0);
+                key(' ');
+                require(host.presentation().runtimeStatus.objectLine.find("PAUSED") != std::string::npos, "Space pauses with panel open");
+                // EXIT must also preserve an already-paused runtime.
+                for (int layer = 0; layer < 4; ++layer) { key('s'); key('s'); key('s'); key('e'); }
+                checkPanel(0, 0, false);
+                require(host.presentation().runtimeStatus.objectLine.find("PAUSED") != std::string::npos, "Exit preserves pause");
+                key(' '); require(host.presentation().runtimeStatus.objectLine == running, "Space resumes with panel hidden");
+                key(9);
+                for (int layer = 0; layer < 2; ++layer) { key('s'); key('s'); key('s'); key('e'); }
+                key('s'); checkPanel(2, 1);
+                key('q');
+                require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION,
+                    "Q exits Layer 3 even with panel open");
+                selectRow("PRESS E TO RUN SIM"); key('e'); checkPanel(0, 0, false);
+                key(9); checkPanel(0, 0); key(9);
+
+                auto command = [&](const std::string& label) {
+                    for (const auto& item : host.menu().items)
+                        if (item.enabled && item.label.find(label) != std::string::npos) return item.command;
+                    throw std::runtime_error("Missing retained menu command: " + label);
+                };
+                require(host.handleMenuCommand(command("CAM VIEW")) && camera.freeViewActive(), "Retained free-camera menu");
+                auto heldW = arbiter.routeKeyboard(keyboard.onKey('w', 0, 0)).workspaceInput;
+                host.handleInput(heldW); // Deliberately no key-up before TAB.
+                glm::vec3 eye, dir, afterEye, afterDir;
+                camera.getCenterViewRay(eye, dir);
+                key(9); tick();
+                for (unsigned char raw : std::string("wsade")) { key(raw); tick(); }
+                auto down = arbiter.translateMouseButton(GLUT_LEFT_BUTTON, GLUT_DOWN, 640, 450);
+                auto up = arbiter.translateMouseButton(GLUT_LEFT_BUTTON, GLUT_UP, 640, 450);
+                WorkspacePointerEvent motion;
+                motion.type = WorkspacePointerEvent::Type::Motion; motion.dx = 70; motion.dy = 30;
+                require(host.handlePointerInput(down) && host.handlePointerInput(motion) && host.handlePointerInput(up),
+                    "Panel captures pointer interaction before free look");
+                tick(); camera.getCenterViewRay(afterEye, afterDir);
+                require(glm::length(eye - afterEye) < 1e-5f && glm::length(dir - afterDir) < 1e-5f,
+                    "Panel W/S/A/D/E and mouse cannot move or rotate free camera");
+                if (atomic) {
+                    host.handleMenuCommand(command("TEST FIRE"));
+                    host.handlePointerInput(down); host.handlePointerInput(up); key('e');
+                    bool empty = false;
+                    for (const auto& line : host.presentation().runtimeStatus.detailLines)
+                        if (line.find("ACTIVE DEBUG: 0/128") != std::string::npos) empty = true;
+                    require(empty, "Panel blocks Atomic test-fire clicks and placeholder E");
+                    host.handleMenuCommand(command("TEST FIRE"));
+                }
+                key(9); tick(); camera.getCenterViewRay(afterEye, afterDir);
+                require(glm::length(eye - afterEye) < 1e-5f, "TAB clears held movement, including after hide");
+                host.handlePointerInput(motion); camera.getCenterViewRay(afterEye, afterDir);
+                require(glm::length(dir - afterDir) < 1e-5f, "No stale drag after panel hide");
+                host.handleInput(heldW); tick(); host.handleInputRelease(heldW);
+                camera.getCenterViewRay(afterEye, afterDir);
+                require(glm::length(eye - afterEye) > 1e-5f, "Hidden panel restores camera movement");
+                host.handlePointerInput(down); host.handlePointerInput(motion); host.handlePointerInput(up);
+                camera.getCenterViewRay(afterEye, afterDir);
+                require(glm::length(dir - afterDir) > 1e-5f, "Hidden panel restores free look");
+                host.handleMenuCommand(command("CAM VIEW"));
+                if (!atomic) {
+                    require(host.handleMenuCommand(command("Display Slider")), "Retained slider toggle");
+                    tick();
+                    bool sliderOn = false, neutralHeading = false;
+                    for (const auto& item : host.menu().items) {
+                        if (item.label.find("Display Slider [ON]") != std::string::npos) sliderOn = true;
+                        if (item.label == "PARTICLE_SIM RUNTIME CONTROLS") neutralHeading = true;
+                    }
+                    require(sliderOn && neutralHeading, "Sliders retained under neutral runtime menu heading");
+                    require(host.handleMenuCommand(command("Shoot Particles")), "Retained Shoot Particles placeholder command");
+                    host.handleMenuCommand(command("Display Slider"));
+                }
+                std::printf("PASS: %s shared sub-layers 0-3, all edges, TAB retention, Q/reset, pause, exclusive input and legacy menu\n", mode.c_str());
+            };
+
             auto runAtomic = [&]() {
                 // Domain entry starts on PARTICLE_SIM; select the new Atomic cartridge explicitly.
                 require(arbiter.isDomainSelection(), "Atomic entry starts from Layer 1");
@@ -400,6 +530,7 @@ int main(int argc, char** argv) {
                 selectRow("PRESS E TO RUN SIM"); key('e');
                 require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "Run Atomic");
                 require(host.presentation().runtimeStatus.objectLine.find("1320") != std::string::npos, "1320 markers retain population semantics");
+                checkSubLayers(true);
                 tick();
                 auto detail = [&](const std::string& token) {
                     for (const auto& line : host.presentation().runtimeStatus.detailLines)
@@ -478,6 +609,7 @@ int main(int argc, char** argv) {
             selectRow("CONFIGURE WORKSPACE"); key('e');
             selectRow("PARTICLE AMOUNT"); key('d'); // nonempty population with unchanged default radius
             selectRow("PRESS E TO RUN SIM"); key('e'); tick();
+            checkSubLayers(false);
             require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "ParticleSim runs at box 16");
             require(cudaDeviceSynchronize() == cudaSuccess, "ParticleSim CUDA update at box 16");
             key('q'); tick(); key('q'); tick(); key('q'); settle();
@@ -499,6 +631,7 @@ int main(int argc, char** argv) {
             selectRow("CONFIGURE WORKSPACE"); key('e');
             selectRow("PARTICLE AMOUNT"); key('d');
             selectRow("PRESS E TO RUN SIM"); key('e'); tick();
+            checkSubLayers(false);
             require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "Nonempty ParticleSim runs at box 32");
             require(cudaDeviceSynchronize() == cudaSuccess, "ParticleSim CUDA update at box 32");
             checkDomain(32);

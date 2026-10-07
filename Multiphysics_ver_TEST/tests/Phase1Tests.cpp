@@ -1,4 +1,5 @@
 #include "VoxelField3D.h"
+#include "RuntimeSubLayerTraversal.h"
 #include "DebugElectrodynamics.h"
 #include "FieldDebugRenderer.h"
 #include "SimulationPreset.h"
@@ -297,6 +298,60 @@ namespace {
         check(sim.projectiles().front().eventId==13,"oldest recycled");
         sim.clear(); check(sim.firedCount()==0 && sim.projectiles().empty(),"clear resets diagnostic session");
     }
+    void runtimeSubLayers() {
+        RuntimeSubLayerTraversal traversal;
+        using Result = RuntimeSubLayerTraversal::ActivationResult;
+        check(!traversal.panelOpen() && traversal.selectedRow() == 0 &&
+            traversal.activeLayer() == RuntimeSubLayer::SubLayer0, "sub-layer defaults");
+        WorkspaceInputEvent input;
+        input.action = WorkspaceInputAction::Next;
+        check(!traversal.handlePanelInput(input), "hidden panel does not consume navigation");
+        traversal.showPanel();
+        for (int layer = 0; layer < 4; ++layer) {
+            check(static_cast<int>(traversal.activeLayer()) == layer, "forward traversal");
+            const int count = layer == 0 ? 4 : 5;
+            check(traversal.rowCount() == count, "per-layer row count");
+            traversal.moveCursor(-1);
+            check(traversal.selectedRow() == count - 1, "up wraps");
+            traversal.moveCursor(1);
+            for (int row = 0; row < 3; ++row) {
+                check(traversal.activateSelected() == Result::None, "placeholder activation no-op");
+                traversal.moveCursor(1);
+            }
+            traversal.togglePanel(); traversal.togglePanel();
+            check(traversal.selectedRow() == 3 && static_cast<int>(traversal.activeLayer()) == layer,
+                "TAB retains layer and cursor");
+            input.action = WorkspaceInputAction::Activate; input.repeated = true;
+            check(traversal.handlePanelInput(input) && static_cast<int>(traversal.activeLayer()) == layer,
+                "held E does not retrigger transitions");
+            input.repeated = false;
+            if (layer > 0) {
+                traversal.moveCursor(1);
+                check(traversal.activateSelected() == Result::ChangedLayer &&
+                    static_cast<int>(traversal.activeLayer()) == layer - 1 && traversal.selectedRow() == 0,
+                    "previous transition resets cursor");
+                for (int step = 0; step < 3; ++step) traversal.moveCursor(1);
+                traversal.activateSelected();
+                for (int step = 0; step < 3; ++step) traversal.moveCursor(1);
+            }
+            check(traversal.activateSelected() == (layer == 3 ? Result::ExitToRuntime : Result::ChangedLayer),
+                "activation result distinguishes exit");
+        }
+        check(!traversal.panelOpen() && traversal.activeLayer() == RuntimeSubLayer::SubLayer0 &&
+            traversal.selectedRow() == 0, "exit clears traversal only");
+        traversal.showPanel();
+        for (auto action : {WorkspaceInputAction::TogglePause, WorkspaceInputAction::Back}) {
+            input.action = action;
+            check(!traversal.handlePanelInput(input), "Space and Q belong to workspace");
+        }
+        for (auto action : {WorkspaceInputAction::Decrease, WorkspaceInputAction::Increase}) {
+            input.action = action;
+            check(traversal.handlePanelInput(input) && traversal.selectedRow() == 0, "A/D consumed as no-op");
+        }
+        traversal.moveCursor(1); traversal.reset();
+        check(!traversal.panelOpen() && traversal.selectedRow() == 0, "new runtime reset");
+    }
+
     void cameraAndRouting() {
         CameraProcessor camera;
         camera.setBehaviorMode(CameraProcessor::CAM_STANDARD_3D);
@@ -357,8 +412,8 @@ namespace {
 int main() {
     try {
         fieldsAndCurl(); independentFieldGrid(); diagnosticSampling(); glyphScaling();
-        projectilesAndSigns(); raysAndCapacity(); cameraAndRouting();
-        std::cout << "PASS: " << checks << " field, curl, electrodynamics, ray, capacity, camera and input checks\n";
+        projectilesAndSigns(); raysAndCapacity(); cameraAndRouting(); runtimeSubLayers();
+        std::cout << "PASS: " << checks << " field, curl, electrodynamics, ray, capacity, camera, input and sub-layer checks\n";
         return 0;
     } catch(const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
 }

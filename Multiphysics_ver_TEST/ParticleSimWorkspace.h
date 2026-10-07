@@ -10,6 +10,7 @@
 #include <vector_types.h>
 
 #include "IWorkspaceEM.h"
+#include "RuntimeSubLayerTraversal.h"
 #include "TextEntry.h"
 #include "TheArbiterEM.h"
 #include "particleSystem.h"
@@ -58,13 +59,6 @@ private:
 		ColorMode,
 		RadiusMode,
 		Configure,
-		Count
-	};
-
-	enum class Layer3Row {
-		DisplaySliders = 0,
-		CameraView,
-		ShootParticles,
 		Count
 	};
 
@@ -170,10 +164,8 @@ private:
 
 	void moveLayer1Cursor(int direction);
 	void moveLayer2Cursor(int direction);
-	void moveLayer3Cursor(int direction);
 	void adjustLayer1Value(int direction, WorkspaceServices& services);
 	void adjustLayer2Value(int direction);
-	void adjustLayer3Value(int direction, WorkspaceServices& services);
 
 	void setLayer3CameraView(Layer3CameraView view, WorkspaceServices& services);
 	void toggleDisplaySliders(WorkspaceServices& services);
@@ -231,12 +223,11 @@ private:
 	TextEntrySession m_textEntry;
 
 	Layer1Row m_layer1Selection = Layer1Row::WorkspaceSelection;
-	Layer3Row m_layer3Selection = Layer3Row::DisplaySliders;
 
 	Layer3CameraView m_layer3CameraView = Layer3CameraView::Orbit;
 
 	int m_layer2Selection = 0;
-	bool m_subLayerPanelOpen = false;
+	RuntimeSubLayerTraversal m_subLayers;
 	
 	bool m_displaySliders = false;
 	

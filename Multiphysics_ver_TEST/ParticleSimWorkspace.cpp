@@ -209,9 +209,8 @@ void ParticleSimWorkspace::enter(WorkspaceServices& services) {
 	m_active = true;
 	m_paused = true;
 	m_runtimeEnabled = false;
-	m_subLayerPanelOpen = false;
+	m_subLayers.reset();
 
-	m_layer3Selection = Layer3Row::DisplaySliders;
 	m_elapsedSimulationTime = 0.0f;
 	m_textEntry.cancel();
 }
@@ -222,7 +221,7 @@ void ParticleSimWorkspace::exit(WorkspaceServices& services) {
 	m_active = false;
 	m_paused = true;
 	m_runtimeEnabled = false;
-	m_subLayerPanelOpen = false;
+	m_subLayers.reset();
 	m_textEntry.cancel();
 }
 
@@ -233,7 +232,7 @@ void ParticleSimWorkspace::update(
 	if (!layer3Active()) return;
 
 	// Camera motion is independent of the simulation's pause/time-scale state.
-	if (!m_subLayerPanelOpen &&
+	if (!m_subLayers.panelOpen() &&
 		m_layer3CameraView == Layer3CameraView::Free && services.camera) {
 		services.camera->moveFree(
 			static_cast<float>(m_freeMovementKeys[0]) - static_cast<float>(m_freeMovementKeys[1]),
@@ -317,7 +316,7 @@ bool ParticleSimWorkspace::layer3Active() const {
 }
 
 bool ParticleSimWorkspace::slidersVisible() const {
-	return layer3Active() && m_displaySliders && !m_subLayerPanelOpen && m_runtimeSliders;
+	return layer3Active() && m_displaySliders && !m_subLayers.panelOpen() && m_runtimeSliders;
 }
 
 WorkspaceMenuPresentation ParticleSimWorkspace::buildMenu() const {
@@ -328,13 +327,13 @@ WorkspaceMenuPresentation ParticleSimWorkspace::buildMenu() const {
 	};
 	auto divider = [&]() { add("=========================================", 0, false); };
 	divider();
-	add("- Sub-Layer 0: ENV SET UP -", 0, false);
+	add("PARTICLE_SIM RUNTIME CONTROLS", 0, false);
 	divider();
 	add("Toggle:", 0, false);
 	add(std::string("* Display Slider [") + (m_displaySliders ? "ON" : "OFF") + "]", MenuDisplaySliders);
 	add(std::string("* CAM VIEW [") + layer3CameraViewName() + "]", MenuCameraView);
 	divider();
-	add("Next Sub-Layer", 0, false);
+	add("Runtime Actions:", 0, false);
 	add("* Shoot Particles", MenuShootParticles);
 	divider();
 	return menu;
@@ -426,6 +425,8 @@ bool ParticleSimWorkspace::handlePointerInput(
 		return false; // The host exclusively owns the native right-click menu.
 	}
 
+	if (m_subLayers.panelOpen()) return true;
+
 	if (slidersVisible()) {
 		const int rowCount = m_runtimeSliders->panel.GetSize();
 		const bool inside = input.x >= kSliderX && input.x <= kSliderX + kSliderWidth &&
@@ -459,11 +460,11 @@ bool ParticleSimWorkspace::handlePointerInput(
 
 	if (m_layer3CameraView != Layer3CameraView::Free) return false;
 	if (input.type == Type::Button && input.button == Button::Left) {
-		m_freeLookDragging = input.pressed && !m_subLayerPanelOpen;
+		m_freeLookDragging = input.pressed && !m_subLayers.panelOpen();
 		return true;
 	}
 	if (input.type == Type::Motion) {
-		if (m_freeLookDragging && !m_subLayerPanelOpen && services.camera) {
+		if (m_freeLookDragging && !m_subLayers.panelOpen() && services.camera) {
 			services.camera->lookFree(static_cast<float>(input.dx), static_cast<float>(input.dy));
 		}
 		return true;
@@ -587,8 +588,7 @@ bool ParticleSimWorkspace::handleLayer2Input(
 			if (applyRuntimeConfig()) {
 				setLayer3CameraView(Layer3CameraView::Orbit, services);
 				m_elapsedSimulationTime = 0.0f;
-				m_subLayerPanelOpen = false;
-				m_layer3Selection = Layer3Row::DisplaySliders;
+				m_subLayers.reset();
 				m_paused = false;
 				m_runtimeEnabled = true;
 				m_statusLine = "STATUS: RUNNING";
@@ -626,19 +626,20 @@ bool ParticleSimWorkspace::handleLayer3Input(
 	const WorkspaceInputEvent& input,
 	WorkspaceServices& services) {
 
-	// Held keys are updated by time, not OS-repeat; toggles remain edge-triggered.
-	if (input.repeated) return true;
-	if (!m_subLayerPanelOpen && m_layer3CameraView == Layer3CameraView::Free &&
-		setFreeMovementKey(input.action, true)) {
-		return true;
-	}
+    if (input.action == WorkspaceInputAction::TogglePanel) {
+        if (!input.repeated) {
+            cancelInput(services);
+            m_subLayers.togglePanel();
+        }
+        return true;
+    }
+    if (m_subLayers.handlePanelInput(input)) return true;
+    // Held keys are updated by time, not OS repeat.
+    if (input.repeated) return true;
+    if (m_layer3CameraView == Layer3CameraView::Free &&
+        setFreeMovementKey(input.action, true)) return true;
 
-	switch (input.action) {
-	case WorkspaceInputAction::TogglePanel:
-		cancelInput(services);
-		m_subLayerPanelOpen = !m_subLayerPanelOpen;
-		return true;
-
+    switch (input.action) {
 	case WorkspaceInputAction::TogglePause:
 		if (!m_runtimeEnabled) return true;
 		m_paused = !m_paused;
@@ -650,7 +651,7 @@ bool ParticleSimWorkspace::handleLayer3Input(
 
 	case WorkspaceInputAction::Back:
 		setLayer3CameraView(Layer3CameraView::Orbit, services);
-		m_subLayerPanelOpen = false;
+		m_subLayers.reset();
 		m_paused = true;
 		m_runtimeEnabled = false;
 		m_statusLine = "STATUS: PAUSED";
@@ -659,29 +660,6 @@ bool ParticleSimWorkspace::handleLayer3Input(
 			TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION
 		);
 		return true;
-
-	case WorkspaceInputAction::Previous:
-		if (!m_subLayerPanelOpen) return false;
-		moveLayer3Cursor(-1);
-		return true;
-
-	case WorkspaceInputAction::Next:
-		if (!m_subLayerPanelOpen) return false;
-		moveLayer3Cursor(+1);
-		return true;
-
-	case WorkspaceInputAction::Decrease:
-		if (!m_subLayerPanelOpen) return false;
-		adjustLayer3Value(-1, services);
-		return true;
-
-	case WorkspaceInputAction::Increase:
-		if (!m_subLayerPanelOpen) return false;
-		adjustLayer3Value(+1, services);
-		return true;
-
-	case WorkspaceInputAction::Activate:
-		return m_subLayerPanelOpen;
 
 	case WorkspaceInputAction::RawKey:
 	case WorkspaceInputAction::None:
@@ -952,40 +930,9 @@ WorkspacePresentation ParticleSimWorkspace::buildLayer2Presentation() const {
 }
 
 WorkspacePresentation ParticleSimWorkspace::buildLayer3Presentation() const {
-	WorkspacePresentation p;
-	p.panelLayout = WorkspacePanelLayout::SubLayer;
-	p.panelVisible = m_subLayerPanelOpen;
-	p.runtimeStatus = buildParticleRuntimeStatus();
-	p.workspaceName = "PARTICLE_SIMULATION MODE";
-	p.subLayerLabel = "SUB-LAYER_0 -> SIM ENV SETUP";
-
-	WorkspacePanelSection toggle;
-	toggle.heading = "Toggle:";
-	toggle.rows.push_back(makeRow(
-		"[1]: DISPLAY SLIDERS",
-		m_displaySliders ? "ON" : "OFF",
-		m_layer3Selection == Layer3Row::DisplaySliders
-	));
-	p.sections.push_back(toggle);
-
-	WorkspacePanelSection camera;
-	camera.heading = "Camera Mode:";
-	camera.rows.push_back(makeRow(
-		"[2]: CAM VIEW",
-		layer3CameraViewName(),
-		m_layer3Selection == Layer3Row::CameraView
-	));
-	p.sections.push_back(camera);
-
-	WorkspacePanelSection next;
-	next.heading = "Next Sub-Layer:";
-	next.rows.push_back(makeRow(
-		"[3]: SHOOT PARTICLES",
-		"",
-		m_layer3Selection == Layer3Row::ShootParticles
-	));
-	p.sections.push_back(next);
-	return p;
+    auto p = m_subLayers.buildPresentation("PARTICLE_SIM MODE");
+    p.runtimeStatus = buildParticleRuntimeStatus();
+    return p;
 }
 
 WorkspaceRuntimeStatus
@@ -995,9 +942,7 @@ ParticleSimWorkspace::buildParticleRuntimeStatus() const {
 
 	status.titleLine =
 		"LAYER 3 -> SIMULATION RUNTIME (PARTICLE_SIMULATION)";
-	status.contextLine = m_subLayerPanelOpen
-		? "PARTICLE_SIMULATION: SUB-LAYER_0 SIM ENV SETUP"
-		: "PARTICLE_SIMULATION: LAYER 3 RUNTIME";
+	status.contextLine = m_subLayers.context("PARTICLE_SIMULATION");
 
 	const bool running = m_runtimeEnabled && !m_paused;
 	status.objectLine =
@@ -1008,9 +953,7 @@ ParticleSimWorkspace::buildParticleRuntimeStatus() const {
 	status.objectTone = running
 		? WorkspaceStatusTone::Ready
 		: WorkspaceStatusTone::Neutral;
-	status.helpLine = m_subLayerPanelOpen
-		? "TAB: HIDE SUB_LAYER PANEL    SPACE: PAUSE    Q: BACK"
-		: "TAB: SUB_LAYER PANEL DISPLAY    SPACE: PAUSE    Q: BACK";
+	status.helpLine = m_subLayers.help() + "    SPACE: PAUSE    Q: BACK";
 	return status;
 }
 
@@ -1191,15 +1134,7 @@ void ParticleSimWorkspace::moveLayer2Cursor(int direction) {
 	m_layer2Selection = (m_layer2Selection + step + count) % count;
 }
 
-void ParticleSimWorkspace::moveLayer3Cursor(int direction) {
-	if (direction == 0) return;
-	const int count = static_cast<int>(Layer3Row::Count);
-	const int current = static_cast<int>(m_layer3Selection);
-	const int step = direction < 0 ? -1 : 1;
-	m_layer3Selection = static_cast<Layer3Row>(
-		(current + step + count) % count
-	);
-}
+
 
 void ParticleSimWorkspace::adjustLayer1Value(
 	int direction,
@@ -1330,27 +1265,7 @@ void ParticleSimWorkspace::adjustLayer2Value(int direction) {
 	m_statusTone = WorkspaceStatusTone::Ready;
 }
 
-void ParticleSimWorkspace::adjustLayer3Value(int direction, WorkspaceServices& services) {
-	if (direction == 0) return;
 
-	switch (m_layer3Selection) {
-	case Layer3Row::DisplaySliders:
-		toggleDisplaySliders(services);
-		return;
-
-	case Layer3Row::CameraView:
-		setLayer3CameraView(
-			m_layer3CameraView == Layer3CameraView::Orbit
-			? Layer3CameraView::Free
-			: Layer3CameraView::Orbit, services);
-		return;
-
-	case Layer3Row::ShootParticles:
-	case Layer3Row::Count:
-	default:
-		return;
-	}
-}
 
 void ParticleSimWorkspace::beginParticleAmountEntry() {
 	const unsigned int maximum = m_capacity - otherColorCount();

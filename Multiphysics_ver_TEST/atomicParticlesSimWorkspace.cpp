@@ -550,6 +550,7 @@ bool AtomicParticlesSimWorkspace::handleLayer2Input(
             const bool resumeExisting = runtimeMatchesDraft();
 
             if (resumeExisting || applyRuntimeConfig()) {
+                m_subLayers.reset();
 
                 if (!resumeExisting) {
                     m_elapsedSimulationTime = 0.0f;
@@ -597,6 +598,15 @@ bool AtomicParticlesSimWorkspace::handleLayer3Input(
     const WorkspaceInputEvent& input,
     WorkspaceServices& services) {
 
+    if (input.action == WorkspaceInputAction::TogglePanel) {
+        if (!input.repeated) {
+            cancelInput(services);
+            m_subLayers.togglePanel();
+        }
+        return true;
+    }
+    if (m_subLayers.handlePanelInput(input)) return true;
+
     if (handleFieldDebugKey(input, services)) return true;
     if (m_layer3CameraView == Layer3CameraView::Free &&
         setFreeMovementKey(input.action, true)) return true;
@@ -624,6 +634,7 @@ bool AtomicParticlesSimWorkspace::handleLayer3Input(
     case WorkspaceInputAction::Back:
 
         leaveRuntimeCamera(services);
+        m_subLayers.hidePanel();
         m_testFireMode = false;
         m_paused = true;
         m_statusLine = "PAUSED: E on RUN SIM resumes; changed settings restart on E.";
@@ -876,11 +887,8 @@ AtomicParticlesSimWorkspace::buildLayer2Presentation() const {
 
 WorkspacePresentation
 AtomicParticlesSimWorkspace::buildLayer3Presentation() const {
-
-    WorkspacePresentation p;
-    p.panelVisible = false;
+    auto p = m_subLayers.buildPresentation("ATOMIC_PARTICLES MODE");
     p.runtimeStatus = buildRuntimeStatus();
-
     return p;
 }
 
@@ -893,9 +901,7 @@ WorkspaceRuntimeStatus AtomicParticlesSimWorkspace::buildRuntimeStatus() const {
         "LAYER 3 -> SIMULATION RUNTIME "
         "(ATOMIC_PARTICLES)";
 
-    status.contextLine =
-        "ATOMIC_PHYSICS: "
-        "SPECIES POPULATION RUNTIME";
+    status.contextLine = m_subLayers.context("ATOMIC_PARTICLES");
 
     const bool running = m_runtimeEnabled && !m_paused;
 
@@ -911,7 +917,7 @@ WorkspaceRuntimeStatus AtomicParticlesSimWorkspace::buildRuntimeStatus() const {
         ? WorkspaceStatusTone::Ready
         : WorkspaceStatusTone::Neutral;
 
-    status.helpLine = "SPACE: PAUSE    Q: BACK    RIGHT CLICK: CAMERA / TEST MENU";
+    status.helpLine = m_subLayers.help() + "    SPACE: PAUSE    Q: BACK    RIGHT CLICK: CAMERA / TEST MENU";
     appendFieldDebugStatus(status);
 
     return status;
