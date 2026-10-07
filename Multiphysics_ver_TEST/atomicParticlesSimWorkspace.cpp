@@ -472,8 +472,8 @@ bool AtomicParticlesSimWorkspace::handleLayer1Input(
 
         if (m_layer1Selection == Layer1Row::Configure) {
 
-            if (m_draftConfig.gridLayout == GridLayout::Dynamic) {
-                m_statusLine = "DYNAMIC GRID is unavailable for this pass.";
+            if (m_draftConfig.initialMaterialPhase != InitialMaterialPhase::Gas) {
+                m_statusLine = "Unavailable for this current pass.";
                 m_statusTone = WorkspaceStatusTone::Warning;
                 return true;
             }
@@ -744,9 +744,9 @@ AtomicParticlesSimWorkspace::buildLayer1Presentation() const {
     ));
 
     section.rows.push_back(makeRow(
-        "[2]: GRID LAYOUT",
-        gridLayoutName(),
-        m_layer1Selection == Layer1Row::GridLayout
+        "[2]: INITIAL MATERIAL PHASE",
+        initialMaterialPhaseName(),
+        m_layer1Selection == Layer1Row::InitialMaterialPhase
     ));
 
     section.rows.push_back(makeRow(
@@ -771,6 +771,10 @@ AtomicParticlesSimWorkspace::buildLayer1Presentation() const {
 
     p.statusLine = m_statusLine;
     p.statusTone = m_statusTone;
+    if (m_draftConfig.initialMaterialPhase != InitialMaterialPhase::Gas) {
+        p.statusLine = "Unavailable for this current pass.";
+        p.statusTone = WorkspaceStatusTone::Warning;
+    }
     p.footerLine1 = "W/S: Select row    A/D: Change value    E: Configure";
     p.footerLine2 = "Q: Return to Global Shell    ESC: Exit";
     return p;
@@ -986,10 +990,13 @@ void AtomicParticlesSimWorkspace::adjustLayer1Value(int direction, WorkspaceServ
         }
         return;
 
-    case Layer1Row::GridLayout: {
-        const int count = static_cast<int>(GridLayout::Count);
-        const int current = static_cast<int>(m_draftConfig.gridLayout);
-        m_draftConfig.gridLayout = static_cast<GridLayout>((current + step + count) % count);
+    case Layer1Row::InitialMaterialPhase: {
+        const int count = static_cast<int>(InitialMaterialPhase::Count);
+        const int current = static_cast<int>(m_draftConfig.initialMaterialPhase);
+        m_draftConfig.initialMaterialPhase = static_cast<InitialMaterialPhase>((current + step + count) % count);
+        const bool available = m_draftConfig.initialMaterialPhase == InitialMaterialPhase::Gas;
+        m_statusLine = available ? "READY: ATOMIC_PARTICLES WORKSPACE." : "Unavailable for this current pass.";
+        m_statusTone = available ? WorkspaceStatusTone::Ready : WorkspaceStatusTone::Warning;
         break;
     }
     case Layer1Row::SimulationBoundary: {
@@ -1224,13 +1231,13 @@ float AtomicParticlesSimWorkspace::selectedSpeciesRenderRadius() const {
     }
 }
 
-const char* AtomicParticlesSimWorkspace::gridLayoutName() const {
-    switch (m_draftConfig.gridLayout) {
-    case GridLayout::MajorGrid: return "MAJOR_GRID";
-    case GridLayout::Dynamic: return "DYNAMIC";
-    case GridLayout::None:
-    default:
-        return "NONE";
+const char* AtomicParticlesSimWorkspace::initialMaterialPhaseName() const {
+    switch (m_draftConfig.initialMaterialPhase) {
+    case InitialMaterialPhase::Plasma: return "PLASMA";
+    case InitialMaterialPhase::Liquid: return "LIQUID";
+    case InitialMaterialPhase::Solid: return "SOLID";
+    case InitialMaterialPhase::Gas:
+    default: return "GAS";
     }
 }
 

@@ -52,7 +52,7 @@ public:
 private:
     enum class Layer1Row {
         WorkspaceSelection = 0,
-        GridLayout,
+        InitialMaterialPhase,
         SimulationBoundary,
         SimSpaceMedium,
         Configure,
@@ -70,6 +70,8 @@ private:
         RunSimulation,
         Count
     };
+
+    enum class InitialMaterialPhase { Plasma = 0, Gas, Liquid, Solid, Count };
 
     enum class GridLayout {
         None = 0,
@@ -115,7 +117,8 @@ private:
 
     struct DraftConfig {
 
-        // --- Layer 1 --- 
+        // --- Layer 1 ---
+        InitialMaterialPhase initialMaterialPhase = InitialMaterialPhase::Gas;
         GridLayout gridLayout = GridLayout::None;
         SimulationBoundary simulationBoundary = SimulationBoundary::Closed;
         SimSpaceMedium simSpaceMedium = SimSpaceMedium::Vacuum;
@@ -217,7 +220,7 @@ private:
 
     const char* vectorViewName() const;
     const char* scalarViewName() const;
-    const char* gridLayoutName() const;
+    const char* initialMaterialPhaseName() const;
     const char* simulationBoundaryName() const;
     const char* simSpaceMediumName() const;
     const char* particleSpeciesName() const;
