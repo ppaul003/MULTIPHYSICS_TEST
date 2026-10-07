@@ -60,4 +60,23 @@ struct SimParams {
 	float boundaryDamping;
 };
 
+struct EMFieldBuffers {
+
+	float* rho = nullptr;
+
+	float* phiA = nullptr;
+	float* phiB = nullptr;
+
+	float* temperature = nullptr;
+
+	float4* electric = nullptr;
+	float4* magnetic = nullptr;
+	float4* current = nullptr;
+};
+
+struct FieldGlyphVertex {
+	float4 position;
+	float4 color;
+};
+
 #endif

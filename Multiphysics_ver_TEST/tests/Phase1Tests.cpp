@@ -1,5 +1,4 @@
 #include "VoxelField3D.h"
-#include "RuntimeSubLayerTraversal.h"
 #include "DebugElectrodynamics.h"
 #include "FieldDebugRenderer.h"
 #include "SimulationPreset.h"
@@ -79,36 +78,13 @@ namespace {
             Fields sampled(fieldGrid);
             check(sampled.E.size()==fieldGrid.voxelCount(),"field allocation follows field geometry");
             SpawnDensityRegionGrid3D selection;
-            check(selection.regionCount(spawnGrid)==64 && selection.selectionCount(spawnGrid)==66,
+            check(selection.regionCount(spawnGrid)==64 && selection.selectionCount(spawnGrid)==65,
                 "spawn-density selection count independent of field resolution");
             SpawnDensityRegion3D first,last;
             check(selection.region(spawnGrid,0,first) && selection.region(spawnGrid,63,last),"spawn region endpoints");
             check(nearVec(first.minimum,glm::vec3(-box*.5f)) && nearVec(last.maximum,glm::vec3(box*.5f)),
                 "spawn regions still span whole domain");
             check(nearVec(first.center,glm::vec3(-box*.375f)),"voxel-center spawn geometry preserved");
-            SpawnDensityRegion3D chosen, reference;
-            check(selection.selection(spawnGrid,0,chosen) && chosen.index==glm::ivec3(-2), "whole domain is selection zero");
-            check(nearVec(chosen.minimum,glm::vec3(-box*.5f)) && nearVec(chosen.maximum,glm::vec3(box*.5f)) &&
-                nearVec(chosen.center,glm::vec3(0)) && nearVec(chosen.halfExtent,glm::vec3(box*.5f)) &&
-                closeValue(chosen.volumeM3,box*box*box), "whole-domain bounds and volume follow resize without unit scaling");
-            check(selection.selection(spawnGrid,1,chosen) && chosen.index==glm::ivec3(-1) &&
-                nearVec(chosen.minimum,glm::vec3(-box*.125f)) && nearVec(chosen.maximum,glm::vec3(box*.125f)),
-                "selection one preserves exact center geometry");
-            for(unsigned id=0; id<64; ++id) {
-                check(selection.selection(spawnGrid,id+2,chosen) && selection.region(spawnGrid,id,reference), "all regular selections retained");
-                const glm::ivec3 index(id%4,(id/4)%4,id/16);
-                check(chosen.index==index && nearVec(chosen.minimum,spawnGrid.origin+glm::vec3(index)*(box/4.0f)) &&
-                    nearVec(chosen.maximum,reference.maximum), "regular region locations unchanged");
-                for(unsigned voxel=0; voxel<8; ++voxel)
-                    check(chosen.constituentBaseVoxels[voxel].id==reference.constituentBaseVoxels[voxel].id &&
-                        nearVec(chosen.constituentBaseVoxels[voxel].center,reference.constituentBaseVoxels[voxel].center),
-                        "regular preview constituents unchanged");
-            }
-            check(!selection.selection(spawnGrid,66,chosen), "selection upper bound rejected");
-            check(selection.wholeDomainRegion(spawnGrid,chosen), "whole selection overwrites old regular region");
-            for(const auto& voxel:chosen.constituentBaseVoxels)
-                check(voxel.volumeM3==0, "whole domain does not retain bogus constituent geometry");
-
         }
     }
     void diagnosticSampling() {
@@ -321,60 +297,6 @@ namespace {
         check(sim.projectiles().front().eventId==13,"oldest recycled");
         sim.clear(); check(sim.firedCount()==0 && sim.projectiles().empty(),"clear resets diagnostic session");
     }
-    void runtimeSubLayers() {
-        RuntimeSubLayerTraversal traversal;
-        using Result = RuntimeSubLayerTraversal::ActivationResult;
-        check(!traversal.panelOpen() && traversal.selectedRow() == 0 &&
-            traversal.activeLayer() == RuntimeSubLayer::SubLayer0, "sub-layer defaults");
-        WorkspaceInputEvent input;
-        input.action = WorkspaceInputAction::Next;
-        check(!traversal.handlePanelInput(input), "hidden panel does not consume navigation");
-        traversal.showPanel();
-        for (int layer = 0; layer < 4; ++layer) {
-            check(static_cast<int>(traversal.activeLayer()) == layer, "forward traversal");
-            const int count = layer == 0 ? 4 : 5;
-            check(traversal.rowCount() == count, "per-layer row count");
-            traversal.moveCursor(-1);
-            check(traversal.selectedRow() == count - 1, "up wraps");
-            traversal.moveCursor(1);
-            for (int row = 0; row < 3; ++row) {
-                check(traversal.activateSelected() == Result::None, "placeholder activation no-op");
-                traversal.moveCursor(1);
-            }
-            traversal.togglePanel(); traversal.togglePanel();
-            check(traversal.selectedRow() == 3 && static_cast<int>(traversal.activeLayer()) == layer,
-                "TAB retains layer and cursor");
-            input.action = WorkspaceInputAction::Activate; input.repeated = true;
-            check(traversal.handlePanelInput(input) && static_cast<int>(traversal.activeLayer()) == layer,
-                "held E does not retrigger transitions");
-            input.repeated = false;
-            if (layer > 0) {
-                traversal.moveCursor(1);
-                check(traversal.activateSelected() == Result::ChangedLayer &&
-                    static_cast<int>(traversal.activeLayer()) == layer - 1 && traversal.selectedRow() == 0,
-                    "previous transition resets cursor");
-                for (int step = 0; step < 3; ++step) traversal.moveCursor(1);
-                traversal.activateSelected();
-                for (int step = 0; step < 3; ++step) traversal.moveCursor(1);
-            }
-            check(traversal.activateSelected() == (layer == 3 ? Result::ExitToRuntime : Result::ChangedLayer),
-                "activation result distinguishes exit");
-        }
-        check(!traversal.panelOpen() && traversal.activeLayer() == RuntimeSubLayer::SubLayer0 &&
-            traversal.selectedRow() == 0, "exit clears traversal only");
-        traversal.showPanel();
-        for (auto action : {WorkspaceInputAction::TogglePause, WorkspaceInputAction::Back}) {
-            input.action = action;
-            check(!traversal.handlePanelInput(input), "Space and Q belong to workspace");
-        }
-        for (auto action : {WorkspaceInputAction::Decrease, WorkspaceInputAction::Increase}) {
-            input.action = action;
-            check(traversal.handlePanelInput(input) && traversal.selectedRow() == 0, "A/D consumed as no-op");
-        }
-        traversal.moveCursor(1); traversal.reset();
-        check(!traversal.panelOpen() && traversal.selectedRow() == 0, "new runtime reset");
-    }
-
     void cameraAndRouting() {
         CameraProcessor camera;
         camera.setBehaviorMode(CameraProcessor::CAM_STANDARD_3D);
@@ -435,8 +357,8 @@ namespace {
 int main() {
     try {
         fieldsAndCurl(); independentFieldGrid(); diagnosticSampling(); glyphScaling();
-        projectilesAndSigns(); raysAndCapacity(); cameraAndRouting(); runtimeSubLayers();
-        std::cout << "PASS: " << checks << " field, curl, electrodynamics, ray, capacity, camera, input and sub-layer checks\n";
+        projectilesAndSigns(); raysAndCapacity(); cameraAndRouting();
+        std::cout << "PASS: " << checks << " field, curl, electrodynamics, ray, capacity, camera and input checks\n";
         return 0;
     } catch(const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
 }

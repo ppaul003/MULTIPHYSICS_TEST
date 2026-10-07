@@ -234,7 +234,7 @@ private:
     float m_simulationBoxSizeM = 0.0f;
 
     static constexpr float kMaximumSupportedRadius = 0.0156f;
-    static constexpr unsigned int kParticleCapacity = 16384;
+    static constexpr unsigned int kParticleCapacity = 49152;
     static constexpr unsigned int kMajorGridEvery = 8;
     static constexpr unsigned int kGridSize = 64;
     static constexpr unsigned int kDefaultCountStep = 100;

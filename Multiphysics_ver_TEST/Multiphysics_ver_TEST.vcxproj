@@ -119,6 +119,7 @@
   <ItemGroup>
     <ClInclude Include="atomicParticlesSimWorkspace.h" />
     <ClInclude Include="CameraEM.h" />
+    <ClInclude Include="particleFieldType.h" />
     <ClInclude Include="RuntimeSubLayerTraversal.h" />
     <ClInclude Include="SimulationPreset.h" />
     <ClInclude Include="DebugElectrodynamics.h" />

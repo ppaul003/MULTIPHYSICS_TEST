@@ -8,6 +8,7 @@
 //#include <math_constants.h>
 
 #include "paramsEM_kernel.cuh"
+#include "particleFieldType.h"
 
 #define EPS 0.01f
 #define NUMSTEPS 20
@@ -22,7 +23,6 @@ texture<uint, 1, cudaReadModeElementType> cellEndTex;
 #endif
 
 __constant__ SimParams cSimParams;
-
 
 struct integrate_functor {
 
@@ -85,8 +85,112 @@ struct integrate_functor {
 	}
 };
 
+__global__
+void calcHashD(
+	uint* gridParticleHash,
+	uint* gridParticleIndex,
+	float4* pos,
+	uint numParticles
+);
+
+__global__
+void reorderDataAndFindCellStartD(
+	uint* cellStart,
+	uint* cellEnd,
+	float4* sortedPos,
+	float4* sortedVel,
+	uint* gridParticleHash,
+	uint* gridParticleIndex,
+	float4* oldPos,
+	float4* oldVel,
+	uint numParticles
+);
+
+__global__
+void reorderDataAndFindCellStartD(
+	uint* cellStart,
+	uint* cellEnd,
+	float4* sortedPos,
+	float4* sortedVel,
+	uint* gridParticleHash,
+	uint* gridParticleIndex,
+	float4* oldPos,
+	float4* oldVel,
+	uint numParticles
+);
+
+__global__
+void collideD(
+	float4* newVel,
+	float4* oldPos,
+	float4* oldVel,
+	uint* gridParticleIndex,
+	uint* cellStart,
+	uint* cellEnd,
+	uint numParticles
+);
+
+__global__
+void calculate_forces(
+	float4* d_b, 
+	float4* d_a, 
+	uint numParticles
+);
+
+///////////////////////////////////////////////////////
+__global__
+void clearScalarFieldD(
+	float* field, 
+	unsigned count
+);
+
+__global__
+void clearVectorFieldD(
+	float4* field, 
+	unsigned count
+);
+
+__global__
+void jacobiPoissonD(
+	const float* rho,
+	const float* phiOld,
+	float* phiNew,
+	ParticleFieldGrid grid
+);
+
+__global__
+void electricPotentialD(
+	const float* phi, 
+	float4* electric, 
+	ParticleFieldGrid grid
+);
+
+__global__
+void addAnalyticWaveD(
+	float4 electric, 
+	float4* magnetic, 
+	ParticleFieldGrid grid,
+	AnalyticWave wave,
+	double time
+);
+
+__global__
+void lorentzAccelerationD(
+	const float4* positoins, 
+	const float4* velocities,
+	float4* acceleration,
+	const ParticleFieldMarker* marker,
+	const float4* electric,
+	const float4* magnetic,
+	unsigned particleCount,
+	ParticleFieldGrid grid,
+	AnalyticWave,
+	double time
+);
+
+//////////////////////////////////////////////////////
 ///-----------------------------------------------------------------------------------------
-/// <PARTICLE SYSTEM HELPERS>
+/// <PARTICLE SYSTEM DEVICE FUNCS>
 ///-----------------------------------------------------------------------------------------
 // calculate position in uniform grid
 __device__
@@ -132,6 +236,7 @@ float3 bodyBodyInteractions(
 
 	return ai;
 }
+
 __device__ float3 tile_calculation(float4 myPosition, float3 acc, uint tile, uint numParticles) {
 	extern __shared__ float4 shPosition[];
 
@@ -144,6 +249,7 @@ __device__ float3 tile_calculation(float4 myPosition, float3 acc, uint tile, uin
 
 	return acc;
 }
+
 __device__
 float3 collideSpheres(
 	float4 posA,
@@ -181,6 +287,7 @@ float3 collideSpheres(
 
 	return force;
 }
+
 __device__
 float3 collideCell(
 	int3 gridPos,
@@ -215,8 +322,24 @@ float3 collideCell(
 	return force;
 }
 ///-----------------------------------------------------------------------------------------
-/// </PARTICLE SYSTEM HELPERS>
+/// </PARTICLE SYSTEM DEVICE FUNCS>
 ///-----------------------------------------------------------------------------------------
+
+
+///-----------------------------------------------------------------------------------------
+/// <EM FIELD SYSTEM DEVICE FUNCS>
+///-----------------------------------------------------------------------------------------
+__device__ 
+uint fieldIndex(uint x, uint y, uint z, uint3 dim) {
+
+	return x + 
+		y * dim.x + 
+		z * dim.x * dim.y;
+}
+///-----------------------------------------------------------------------------------------
+/// <EM FIELD DEVICE FUNCS>
+///-----------------------------------------------------------------------------------------
+
 
 ///-----------------------------------------------------------------------------------------
 /// <PARTICLE SYSTEM KERNEL>
@@ -350,7 +473,11 @@ void collideD(
 }
 
 __global__
-void calculate_forces(float4* d_b, float4* d_a, uint numParticles) {
+void calculate_forces(
+	float4* d_b, 
+	float4* d_a,
+	uint numParticles) {
+
 	extern __shared__ float4 shPosition[];
 
 	const uint body_id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -371,9 +498,11 @@ void calculate_forces(float4* d_b, float4* d_a, uint numParticles) {
 		__syncthreads();
 
 	}
+
 	d_a[body_id] = make_float4(acc.x, acc.y, acc.z, 0.0f);
 }
 ///-----------------------------------------------------------------------------------------
 /// </PARTICLE SYSTEM KERNEL>
 ///-----------------------------------------------------------------------------------------
+
 #endif
