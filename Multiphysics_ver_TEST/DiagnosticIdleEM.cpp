@@ -658,15 +658,26 @@ void DiagnosticIdle::updateBoxResize(float dt, WorkspaceServices& services) {
 }
 
 void DiagnosticIdle::completeBoxResize(WorkspaceServices& services) {
+
     services.renderer->setSimBoxSize(m_resizeStep.to.boxSize);
     services.renderer->setGridDimSize(m_resizeStep.to.collisionGridDim);
+    services.renderer->setGridMajorEvery(m_resizeStep.to.majorEvery);
+
     m_activePreset = m_resizeStep.to;
+
     refreshTransitionGrid(services);
+
     m_visualGridDim = m_activePreset.collisionGridDim;
-    m_visualBoundarySize = m_visualGridSize = m_visualPlaneSize = static_cast<float>(m_activePreset.boxSize);
+
+    m_visualBoundarySize = 
+        m_visualGridSize = 
+        m_visualPlaneSize = 
+        static_cast<float>(m_activePreset.boxSize);
+
     m_slicePausedForResize = false;
     m_resizePhaseElapsed = 0.0f;
     m_resizeSteps.pop_front();
+
     if (m_resizeSteps.empty()) m_boxResizePhase = BoxResizePhase::Idle;
     else startNextResizeStep(); // Keep input locked and AUTO blinking across adjacent commits.
     // Preserve the slice phase: same-resolution steps resume at the XY center;

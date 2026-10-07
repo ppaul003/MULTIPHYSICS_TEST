@@ -44,6 +44,7 @@ public:
 	WorkspacePresentation buildPresentation() const override;
 	WorkspacePresentation buildLayer1TransitionPresentation() const;
 	WorkspaceMenuPresentation buildMenu() const override;
+
 	bool handleMenuCommand(int command, WorkspaceServices& services) override;
 	bool handleInputRelease(const WorkspaceInputEvent& input, WorkspaceServices& services) override;
 	bool handlePointerInput(const WorkspacePointerEvent& input, WorkspaceServices& services) override;
@@ -173,8 +174,10 @@ private:
 	void adjustLayer1Value(int direction, WorkspaceServices& services);
 	void adjustLayer2Value(int direction);
 	void adjustLayer3Value(int direction, WorkspaceServices& services);
+
 	void setLayer3CameraView(Layer3CameraView view, WorkspaceServices& services);
 	void toggleDisplaySliders(WorkspaceServices& services);
+
 	bool layer3Active() const;
 	bool slidersVisible() const;
 	bool setFreeMovementKey(WorkspaceInputAction action, bool pressed);
@@ -205,7 +208,7 @@ private:
 	const char* layer3CameraViewName() const;
 
 private:
-	float m_simulationBoxSizeM = 0.0f;
+	
 	static constexpr float kMaximumSupportedRadius = 0.0156f;
 	static constexpr unsigned int kParticleCapacity = 16384;
 	static constexpr unsigned int kGridSize = 64;
@@ -228,11 +231,15 @@ private:
 	TextEntrySession m_textEntry;
 
 	Layer1Row m_layer1Selection = Layer1Row::WorkspaceSelection;
+	Layer3Row m_layer3Selection = Layer3Row::DisplaySliders;
+
+	Layer3CameraView m_layer3CameraView = Layer3CameraView::Orbit;
+
 	int m_layer2Selection = 0;
 	bool m_subLayerPanelOpen = false;
-	Layer3Row m_layer3Selection = Layer3Row::DisplaySliders;
+	
 	bool m_displaySliders = false;
-	Layer3CameraView m_layer3CameraView = Layer3CameraView::Orbit;
+	
 	bool m_freeMovementKeys[4] = { false, false, false, false };
 	bool m_freeLookDragging = false;
 	int m_sliderDragRow = -1;
@@ -247,6 +254,7 @@ private:
 	bool m_paused = true;
 	bool m_runtimeEnabled = false;
 
+	float m_simulationBoxSizeM = 0.0f;
 	float m_elapsedSimulationTime = 0.0f;
 };
 

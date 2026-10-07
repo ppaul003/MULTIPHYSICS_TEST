@@ -1,7 +1,14 @@
 #include "multiPhysicsSimWorkspace.h"
 #include "SimulationPreset.h"
 #include "rendererEM_Euclid.h"
+#include "CameraEM.h"
 
+#include <paramgl.h>
+
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
 #include <string>
 
 using namespace std;
@@ -27,20 +34,25 @@ namespace {
 } // namespace
 
 
-bool MultiPhysicsSimWorkspace::initialize(
-    WorkspaceServices& services) {
-
-    if (m_initialized)
-        return true;
+bool MultiPhysicsSimWorkspace::initialize(WorkspaceServices& services) {
+    if (m_initialized) return true;
 
     if (!services.renderer ||
-        !services.arbiter) {
+        !services.arbiter)
         return false;
-    }
 
     m_arbiter = services.arbiter;
 
+    m_particleSystem = make_unique<ParticleSystem>(
+        kParticleCapacity,
+        m_gridDimensions,
+        true
+    );
+
     syncSimulationDomain(services);
+
+    if (!m_particleSystem->setActiveParticleCount(0))
+        return false;
 
     m_initialized = true;
 
@@ -51,38 +63,35 @@ bool MultiPhysicsSimWorkspace::initialize(
 void MultiPhysicsSimWorkspace::syncSimulationDomain(
     WorkspaceServices& services) {
 
-    if (!services.renderer)
+    if (!services.renderer ||
+        !m_particleSystem)
         return;
 
-    const int boxSize =
-        services.renderer->getSimBoxSize();
-
-    const SimulationPreset* preset =
-        findSimulationPreset(boxSize);
+    const float boxSize = static_cast<float>(services.renderer->getSimBoxSize());
+    const auto* preset = findSimulationPreset(services.renderer->getSimBoxSize());
 
     if (!preset ||
-        !preset->enabled) {
+        !preset->enabled ||
+        services.renderer->getGridDimSize()
+        != preset->collisionGridDim)
         return;
-    }
 
-    // The Layer-0 committed preset is authoritative.
-    m_simulationBoxSize =
-        static_cast<float>(boxSize);
+    const auto currentGrid = m_particleSystem->getGridSize();
+    const uint dimension = static_cast<uint>(preset->collisionGridDim);
 
-    m_collisionGridDimension =
-        preset->collisionGridDim;
+    if (boxSize == m_simulationBoxSize && currentGrid.x == dimension &&
+        currentGrid.y == dimension && currentGrid.z == dimension)
+        return;
 
-    // Preserve the shared physical 8x8x8 workspace geometry.
-    m_baseVoxelGrid.dimensions =
-        ivec3(8);
+    m_particleSystem->setSimulationDomain(
+        boxSize,
+        make_uint3(dimension, dimension, dimension)
+    );
 
-    m_baseVoxelGrid.origin =
-        vec3(
-            -m_simulationBoxSize * 0.5f
-        );
-
-    m_baseVoxelGrid.voxelEdgeM =
-        m_simulationBoxSize / 8.0f;
+    m_simulationBoxSize = boxSize;
+    m_baseVoxelGrid.dimensions = ivec3(8);
+    m_baseVoxelGrid.origin = vec3(-boxSize * 0.5f);
+    m_baseVoxelGrid.voxelEdgeM = boxSize / 8.0f;
 }
 
 
@@ -98,22 +107,13 @@ MultiPhysicsSimWorkspace::simulationDomainState() const {
         ivec3(m_collisionGridDimension);
 
     state.collisionOrigin =
-        vec3(
-            -m_simulationBoxSize * 0.5f
-        );
+        vec3(-m_simulationBoxSize * 0.5f);
 
     state.collisionCellSize =
-        vec3(
-            m_simulationBoxSize /
-            static_cast<float>(
-                m_collisionGridDimension
-                )
-        );
+        vec3(m_simulationBoxSize / static_cast<float>(m_collisionGridDimension));
 
     const unsigned int dimension =
-        static_cast<unsigned int>(
-            m_collisionGridDimension
-            );
+        static_cast<unsigned int>(m_collisionGridDimension);
 
     state.collisionCellCount =
         dimension *
@@ -168,49 +168,47 @@ void MultiPhysicsSimWorkspace::render(
     const WorkspaceFrameContext& frame,
     WorkspaceServices& services) {
 
-    if (!m_active ||
-        !frame.displayEnabled ||
+    if (!frame.displayEnabled ||
         !services.renderer ||
         !services.arbiter) {
         return;
     }
 
+    switch (services.arbiter->getApplicationLayer()) {
+    case TheArbiter::ApplicationLayer::DOMAIN_SELECTION:
+        renderConfiguredGrid(services);
+        return;
+
+    case TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION:
+    case TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE:
+    case TheArbiter::ApplicationLayer::GLOBAL_SHELL:
+    default:
+        return;
+    }
     // This workspace currently exists only at Layer 1.
     if (services.arbiter->getApplicationLayer() !=
         TheArbiter::ApplicationLayer::DOMAIN_SELECTION) {
         return;
     }
-
-    renderUniformGrid(services);
 }
 
-
-void MultiPhysicsSimWorkspace::renderUniformGrid(
-    WorkspaceServices& services) const {
+void MultiPhysicsSimWorkspace::renderConfiguredGrid(WorkspaceServices& services) const {
 
     if (!services.renderer)
         return;
 
     EuclidRenderer::UniformGrid grid;
+    const auto collisionGrid = m_particleSystem->getGridSize();
 
-    grid.dimensions =
-        ivec3(m_collisionGridDimension);
+    grid.dimensions = ivec3(
+        collisionGrid.x, 
+        collisionGrid.y, 
+        collisionGrid.z
+    );
 
-    grid.origin =
-        vec3(
-            -m_simulationBoxSize * 0.5f
-        );
-
-    grid.cellSize =
-        vec3(
-            m_simulationBoxSize /
-            static_cast<float>(
-                m_collisionGridDimension
-                )
-        );
-
-    grid.majorEvery =
-        kMajorGridEvery;
+    grid.origin = m_baseVoxelGrid.origin;
+    grid.cellSize = vec3(m_simulationBoxSize) / vec3(grid.dimensions);
+    grid.majorEvery = services.renderer->getGridMajorEvery();
 
     EuclidRenderer::GridDisplay display;
 
@@ -219,10 +217,7 @@ void MultiPhysicsSimWorkspace::renderUniformGrid(
     display.minorGrid = false;
     display.axes = false;
 
-    services.renderer->drawUniformGrid(
-        grid,
-        display
-    );
+    services.renderer->drawUniformGrid(grid, display);
 }
 
 
@@ -248,16 +243,14 @@ bool MultiPhysicsSimWorkspace::handleInput(
 
     case WorkspaceInputAction::Decrease:
 
-        services.arbiter->
-            cycleMulphyWorkspace(-1);
+        services.arbiter->cycleMulphyWorkspace(-1);
 
         return true;
 
 
     case WorkspaceInputAction::Increase:
 
-        services.arbiter->
-            cycleMulphyWorkspace(+1);
+        services.arbiter->cycleMulphyWorkspace(+1);
 
         return true;
 
@@ -266,8 +259,7 @@ bool MultiPhysicsSimWorkspace::handleInput(
 
         // E on the selector behaves like D:
         // MULTIPHYSICS_SIM -> PARTICLE_SIM.
-        services.arbiter->
-            cycleMulphyWorkspace(+1);
+        services.arbiter->cycleMulphyWorkspace(+1);
 
         return true;
 
@@ -281,10 +273,9 @@ bool MultiPhysicsSimWorkspace::handleInput(
 
     case WorkspaceInputAction::Back:
 
-        services.arbiter->
-            requestReturnToGlobalShell(
-                TheArbiter::WorkspaceDomain::MULPHY_SIM
-            );
+        services.arbiter->requestReturnToGlobalShell(
+            TheArbiter::WorkspaceDomain::MULPHY_SIM
+        );
 
         return true;
 
@@ -331,10 +322,9 @@ MultiPhysicsSimWorkspace::buildPresentation() const {
     p.sections.push_back(section);
 
     p.statusLine =
-        "READY: MULTIPHYSICS_SIM INTEGRATION CANVAS.";
+        "UNAVAILABLE: Workspace mode still under planning...";
 
-    p.statusTone =
-        WorkspaceStatusTone::Ready;
+    p.statusTone = WorkspaceStatusTone::Warning;
 
     p.footerLine1 =
         "A/D: Change workspace    E: Next workspace";

@@ -637,18 +637,24 @@ bool AtomicParticlesSimWorkspace::handleLayer3Input(
 void AtomicParticlesSimWorkspace::renderConfiguredGrid(
     WorkspaceServices& services, GridLayout layout) const {
 
-    if (!services.renderer) return;
+    if (!services.renderer)
+        return;
 
     EuclidRenderer::UniformGrid grid;
-
     const auto collisionGrid = m_particleSystem->getGridSize();
-    grid.dimensions = ivec3(collisionGrid.x, collisionGrid.y, collisionGrid.z);
 
+    grid.dimensions = ivec3(
+        collisionGrid.x,
+        collisionGrid.y, 
+        collisionGrid.z
+    );
+    
     grid.origin = m_baseVoxelGrid.origin;
     grid.cellSize = vec3(m_simulationBoxSizeM) / vec3(grid.dimensions);
-    grid.majorEvery = static_cast<int>(kMajorGridEvery);
+    grid.majorEvery = services.renderer->getGridMajorEvery();
 
     EuclidRenderer::GridDisplay display;
+
     display.boundary = true;
     display.majorGrid = layout == GridLayout::MajorGrid;
     display.minorGrid = false;
