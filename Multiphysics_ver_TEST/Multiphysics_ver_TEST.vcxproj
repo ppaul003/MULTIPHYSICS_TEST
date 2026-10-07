@@ -93,6 +93,7 @@
     <ClCompile Include="DiagnosticIdleEM.cpp" />
     <ClCompile Include="EuclidEngineEM.cpp" />
     <ClCompile Include="FieldDebugRenderer.cpp" />
+    <ClCompile Include="fieldSystem.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="MultiPhysicsFieldDebug.cpp" />
     <ClCompile Include="multiPhysicsSimWorkspace.cpp" />
@@ -119,6 +120,7 @@
   <ItemGroup>
     <ClInclude Include="atomicParticlesSimWorkspace.h" />
     <ClInclude Include="CameraEM.h" />
+    <ClInclude Include="fieldSystem.h" />
     <ClInclude Include="particleFieldType.h" />
     <ClInclude Include="RuntimeSubLayerTraversal.h" />
     <ClInclude Include="SimulationPreset.h" />
@@ -140,6 +142,7 @@
     <ClInclude Include="TheArbiterEM.h" />
     <ClInclude Include="TheTesseractEM.h" />
     <ClInclude Include="ViewPortEM.h" />
+    <ClInclude Include="volumeSystem.h" />
     <ClInclude Include="VoxelField3D.h" />
     <ClInclude Include="WorkspaceContextEM.h" />
     <ClInclude Include="WorkspaceInputEM.h" />

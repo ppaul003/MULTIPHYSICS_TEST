@@ -24,6 +24,7 @@
 #include <vector_types.h>
 
 #include "particleSystem.h"
+#include "fieldSystem.h"
 
 class EuclidRenderer {
 public:

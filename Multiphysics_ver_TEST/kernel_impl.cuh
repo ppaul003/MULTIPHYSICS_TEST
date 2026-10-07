@@ -22,7 +22,9 @@ texture<uint, 1, cudaReadModeElementType> cellStartTex;
 texture<uint, 1, cudaReadModeElementType> cellEndTex;
 #endif
 
-__constant__ SimParams cSimParams;
+__constant__ ParticleSimParams cParticleParams;
+__constant__ FieldGridParams cFieldGrid;
+__constant__ FieldSolverParams cFieldSolver;
 
 struct integrate_functor {
 
@@ -42,39 +44,39 @@ struct integrate_functor {
 		float3 acc = make_float3(accData.x, accData.y, accData.z);
 
 		vel += acc * deltaTime;
-		vel += cSimParams.gravity * deltaTime;
-		vel *= cSimParams.globalDamping;
+		vel += cParticleParams.gravity * deltaTime;
+		vel *= cParticleParams.globalDamping;
 
 		// new position = old position + velocity * deltaTime
 		pos += vel * deltaTime;
 
 		// set this to zero to disable collisions with cube sides
 #if 1
-		if (pos.x > cSimParams.boundary - velData.w) {
-			pos.x = cSimParams.boundary - velData.w;
-			vel.x *= cSimParams.boundaryDamping;
+		if (pos.x > cParticleParams.boundary - velData.w) {
+			pos.x = cParticleParams.boundary - velData.w;
+			vel.x *= cParticleParams.boundaryDamping;
 		}
-		if (pos.x < -cSimParams.boundary + velData.w) {
-			pos.x = -cSimParams.boundary + velData.w;
-			vel.x *= cSimParams.boundaryDamping;
-		}
-
-		if (pos.y > cSimParams.boundary - velData.w) {
-			pos.y = cSimParams.boundary - velData.w;
-			vel.y *= cSimParams.boundaryDamping;
+		if (pos.x < -cParticleParams.boundary + velData.w) {
+			pos.x = -cParticleParams.boundary + velData.w;
+			vel.x *= cParticleParams.boundaryDamping;
 		}
 
-		if (pos.z > cSimParams.boundary - velData.w) {
-			pos.z = cSimParams.boundary - velData.w;
-			vel.z *= cSimParams.boundaryDamping;
+		if (pos.y > cParticleParams.boundary - velData.w) {
+			pos.y = cParticleParams.boundary - velData.w;
+			vel.y *= cParticleParams.boundaryDamping;
 		}
-		if (pos.z < -cSimParams.boundary + velData.w) {
-			pos.z = -cSimParams.boundary + velData.w;
-			vel.z *= cSimParams.boundaryDamping;
+
+		if (pos.z > cParticleParams.boundary - velData.w) {
+			pos.z = cParticleParams.boundary - velData.w;
+			vel.z *= cParticleParams.boundaryDamping;
 		}
-		if (pos.y < -cSimParams.boundary + velData.w) {
-			pos.y = -cSimParams.boundary + velData.w;
-			vel.y *= cSimParams.boundaryDamping;
+		if (pos.z < -cParticleParams.boundary + velData.w) {
+			pos.z = -cParticleParams.boundary + velData.w;
+			vel.z *= cParticleParams.boundaryDamping;
+		}
+		if (pos.y < -cParticleParams.boundary + velData.w) {
+			pos.y = -cParticleParams.boundary + velData.w;
+			vel.y *= cParticleParams.boundaryDamping;
 		}
 
 #endif
@@ -196,19 +198,19 @@ void lorentzAccelerationD(
 __device__
 int3 calcGridPos(float3 p) {
 	int3 gridPos;
-	gridPos.x = floor((p.x - cSimParams.worldOrigin.x) / cSimParams.cellSize.x);
-	gridPos.y = floor((p.y - cSimParams.worldOrigin.y) / cSimParams.cellSize.y);
-	gridPos.z = floor((p.z - cSimParams.worldOrigin.z) / cSimParams.cellSize.z);
+	gridPos.x = floor((p.x - cParticleParams.worldOrigin.x) / cParticleParams.cellSize.x);
+	gridPos.y = floor((p.y - cParticleParams.worldOrigin.y) / cParticleParams.cellSize.y);
+	gridPos.z = floor((p.z - cParticleParams.worldOrigin.z) / cParticleParams.cellSize.z);
 	return gridPos;
 }
 
 // calculate address in grid from position (clamping to edges)
 __device__
 uint calcGridHash(int3 gridPos) {
-	gridPos.x = gridPos.x & (cSimParams.gridSize.x - 1); // wrap grid, assumes size is power of 2
-	gridPos.y = gridPos.y & (cSimParams.gridSize.y - 1);
-	gridPos.z = gridPos.z & (cSimParams.gridSize.z - 1);
-	return ((gridPos.z * cSimParams.gridSize.y) * cSimParams.gridSize.x) + (gridPos.y * cSimParams.gridSize.x) + gridPos.x;
+	gridPos.x = gridPos.x & (cParticleParams.gridSize.x - 1); // wrap grid, assumes size is power of 2
+	gridPos.y = gridPos.y & (cParticleParams.gridSize.y - 1);
+	gridPos.z = gridPos.z & (cParticleParams.gridSize.z - 1);
+	return ((gridPos.z * cParticleParams.gridSize.y) * cParticleParams.gridSize.x) + (gridPos.y * cParticleParams.gridSize.x) + gridPos.x;
 }
 
 // calculate grid hash value for each particle
@@ -276,13 +278,13 @@ float3 collideSpheres(
 		float3 tanVel = relVel - (dot(relVel, norm) * norm);
 
 		// spring force
-		force = -cSimParams.spring * (collideDist - dist) * norm;
+		force = -cParticleParams.spring * (collideDist - dist) * norm;
 		// dashpot (damping) force
-		force += cSimParams.damping * relVel;
+		force += cParticleParams.damping * relVel;
 		// tangential shear force
-		force += cSimParams.shear * tanVel;
+		force += cParticleParams.shear * tanVel;
 		// attraction
-		force += cSimParams.attraction * relPos;
+		force += cParticleParams.attraction * relPos;
 	}
 
 	return force;
@@ -314,7 +316,7 @@ float3 collideCell(
 				float4 pos2 = FETCH(oldPos, j);
 				float4 vel2 = FETCH(oldVel, j);
 
-				force += collideSpheres(pos, pos2, vel, vel2, cSimParams.attraction);
+				force += collideSpheres(pos, pos2, vel, vel2, cParticleParams.attraction);
 			}
 		}
 	}

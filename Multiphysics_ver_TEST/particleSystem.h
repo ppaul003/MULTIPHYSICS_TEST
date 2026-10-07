@@ -196,7 +196,7 @@ protected:
 	struct cudaGraphicsResource* m_cuda_colorvbo_resource;
 	/// </GPU DATA> //////////////////////////////////////////////
 	
-	SimParams m_params;
+	ParticleSimParams m_params;
 	ParticleClass* m_particleClass;
 	
 	float4 m_uniformParticleColor{ 1.0f, 0.05f, 0.0f, 1.0f };

@@ -35,7 +35,7 @@ extern "C" {
     ///-----------------------------------------------------------------------------------------
     /// <PARTICLE SYSTEM CUDA SOLVER>
     ///-----------------------------------------------------------------------------------------
-    void setParameters(SimParams* hostParams);
+    void setParameters(ParticleSimParams* hostParams);
     void integrateSystem(float* pos, float* vel, float* acc, float deltaTime, unsigned int numParticles);
     void forcesKernel(float* pos, float* acc, int numParticles);
     void calcHash(unsigned int* gridParticleHash, unsigned int* gridParticleIndex, float* pos, int numParticles);

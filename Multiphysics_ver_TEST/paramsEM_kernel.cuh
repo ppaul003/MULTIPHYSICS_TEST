@@ -23,60 +23,193 @@ typedef unsigned char uchar;
 #define FETCH(t, i) ((t)[(i)])
 #endif
 
-struct SimParams {
-	// --- Uniform Grid Setup --- //
-	uint numCells;
-	uint numBodies;
-	uint maxParticlesPerCell;
+//
+// ============================================================
+// PARTICLE SYSTEM
+// ============================================================
+//
 
-	uint3 gridSize;
+// CUDA constants used by ParticleSystem kernels.
+// These describe the particle collision/integration domain,
+// NOT the EM/field grid.
+//
+struct ParticleSimParams {
+    // --- Particle population ---
+    uint32_t numBodies;
 
-	float3 gravity;
-	float3 cellSize;
-	float3 worldOrigin;
+    // --- Collision / neighbor grid ---
+    uint3 gridSize;
+    uint32_t numCells;
+    uint32_t maxParticlesPerCell;
 
-	// ---	EM CELL --- //
-	float3 E; // Electric-field vector
-	float3 B; // Magnetic-field vector
+    float3 worldOrigin;
+    float3 cellSize;
 
-	float rho;
-	float epsilon;
-	float u;
-	float sigma;
+    // --- External particle acceleration ---
+    float3 gravity;
 
-	float ne;
-	float Te;
+    // --- Particle collision model ---
+    float particleRadius;
 
-	// --- Legacy Particle sim parameters --- //
-	float particleRadius;
+    float globalDamping;
 
-	float globalDamping;
+    float shear;
+    float spring;
+    float damping;
+    float attraction;
 
-	float shear;
-	float spring;
-	float damping;
-	float boundary;
-	float attraction;
-	float boundaryDamping;
+    // --- Domain boundary ---
+    float boundary;
+    float boundaryDamping;
 };
 
-struct EMFieldBuffers {
+//
+// ============================================================
+// FIELD SYSTEM GRID
+// ============================================================
+//
 
-	float* rho = nullptr;
+// Independent Eulerian field grid.
+//
+// IMPORTANT:
+// This does NOT need to have the same resolution as the
+// ParticleSystem collision grid.
+//
+struct FieldGridParams {
+    uint3 dimensions;
 
-	float* phiA = nullptr;
-	float* phiB = nullptr;
+    float3 origin;
+    float3 cellSize;
 
-	float* temperature = nullptr;
-
-	float4* electric = nullptr;
-	float4* magnetic = nullptr;
-	float4* current = nullptr;
+    uint32_t cellCount;
 };
 
+
+//
+// ============================================================
+// FIELD SOLVER
+// ============================================================
+//
+
+enum class FieldBoundaryMode : uint8_t {
+    GroundedDirichlet,
+    Neumann,
+    Periodic
+};
+
+struct FieldSolverParams {
+    FieldBoundaryMode boundaryMode;
+
+    uint32_t poissonIterations;
+
+    float coulombSofteningM;
+
+    // Numerical/render-independent field threshold.
+    // Only add if actually required by solver logic.
+    float epsilon;
+};
+
+
+
+
+//
+// ============================================================
+// MATERIAL / MEDIUM PROPERTIES
+// ============================================================
+//
+
+// These describe the medium occupying the field domain.
+//
+// If these later vary spatially, move them into field buffers.
+//
+struct MaterialFieldParams {
+    float relativePermittivity = 1.0f;   // epsilon_r
+    float relativePermeability = 1.0f;   // mu_r
+    float conductivitySm = 0.0f;   // sigma [S/m]
+};
+
+
+//
+// ============================================================
+// EXTERNAL ELECTROMAGNETIC FIELD
+// ============================================================
+//
+
+// Only use these for UNIFORM externally imposed fields.
+//
+// Spatially varying E/B belong in FieldBuffers.
+//
+struct UniformEMField {
+    bool enabled = false;
+
+    float3 electricVm = make_float3(0.0f, 0.0f, 0.0f);
+    float3 magneticT = make_float3(0.0f, 0.0f, 0.0f);
+};
+
+
+//
+// ============================================================
+// ANALYTIC EM WAVE
+// ============================================================
+//
+
+struct AnalyticWaveParams {
+    bool enabled = false;
+
+    float amplitudeVm = 0.0f;
+    float frequencyHz = 0.0f;
+    float phaseRad = 0.0f;
+
+    float3 propagationDirection =
+        make_float3(0.0f, 0.0f, 1.0f);
+
+    float3 polarization =
+        make_float3(1.0f, 0.0f, 0.0f);
+};
+
+
+//
+// ============================================================
+// FIELD SYSTEM GPU STORAGE
+// ============================================================
+//
+
+// GPU-owned arrays.
+//
+// One element corresponds to one FieldGridParams cell.
+//
+struct FieldBuffers {
+    // --- Scalar fields ---
+    float* chargeDensity = nullptr;   // rho_q [C/m^3]
+    float* electricPotential = nullptr; // phi [V]
+
+    // Jacobi scratch buffer.
+    float* electricPotentialScratch = nullptr;
+
+    float* temperature = nullptr;       // T [K]
+
+    // Future plasma fields
+    float* electronDensity = nullptr; // ne [m^-3]
+    float* electronTemperature = nullptr; // Te [eV] or K - choose explicitly
+
+    // --- Vector fields ---
+    float4* electricField = nullptr;    // E [V/m]
+    float4* magneticField = nullptr;    // B [T]
+    float4* currentDensity = nullptr;   // J [A/m^2]
+};
+
+//
+// ============================================================
+// FIELD VISUALIZATION
+// ============================================================
+//
+
+// Render-only data.
+// Must never affect physical field values.
+//
 struct FieldGlyphVertex {
-	float4 position;
-	float4 color;
+    float4 position;
+    float4 color;
 };
 
 #endif

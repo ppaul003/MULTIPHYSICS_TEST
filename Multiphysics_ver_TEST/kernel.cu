@@ -95,9 +95,10 @@ extern "C" {
 		}
 	}
 
-	void setParameters(SimParams* hostParams) {
-		cudaMemcpyToSymbol(cSimParams, hostParams, sizeof(SimParams));
+	void setParameters(ParticleSimParams* hostParams) {
+		cudaMemcpyToSymbol(cParticleParams, hostParams, sizeof(ParticleSimParams));
 	}
+	
 
 	uint iDivUp(uint a, uint b) {
 		return (a % b != 0) ? (a / b + 1) : (a / b);

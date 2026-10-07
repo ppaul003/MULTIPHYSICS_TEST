@@ -5,6 +5,7 @@
 #include <cmath>
 #include <glm/vec3.hpp>
 
+
 class CameraProcessor {
 public:
     enum CameraBehaviorMode {
