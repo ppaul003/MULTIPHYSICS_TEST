@@ -9,6 +9,17 @@
 
 enum class DebugProjectileSpecies { Electron, ArgonIon, ArgonNeutral };
 
+// Display metadata only; no class changes the physical superposition field.
+enum class ElectricGlyphClass { PositiveSource, NegativeSource, DipoleBridge };
+
+struct DiagnosticFieldSample {
+    glm::vec3 electricPositive = glm::vec3(0.0f);
+    glm::vec3 electricNegative = glm::vec3(0.0f);
+    glm::vec3 magneticPositive = glm::vec3(0.0f);
+    glm::vec3 magneticNegative = glm::vec3(0.0f);
+    ElectricGlyphClass electricClass = ElectricGlyphClass::PositiveSource;
+};
+
 struct DebugProjectile {
     DebugProjectileSpecies species = DebugProjectileSpecies::Electron;
     glm::vec3 position = glm::vec3(0.0f);  // m
@@ -27,6 +38,13 @@ struct DebugProjectile {
 class DebugElectrodynamics {
 public:
     static constexpr std::size_t kCapacity = 128;
+    // A local visualization corridor, scaled with the independent field grid.
+    // Sources must be within four field voxels; samples must be strictly
+    // between them and within three quarters of a voxel of their segment.
+    static constexpr double kDipolePairMaxDistanceVoxelEdges = 4.0;
+    static constexpr double kDipoleCorridorRadiusVoxelEdges = 0.75;
+    static constexpr double kDipoleMinPolarityStrengthRatio = 0.15;
+    static constexpr double kDipoleMinNetDirectionCosine = 0.5;
     enum class FireResult { Fired, MissedDomain, InvalidRay };
 
     FireResult fire(DebugProjectileSpecies species, const glm::vec3& originWorld,
@@ -43,7 +61,8 @@ public:
     // current, so for electrons it points OPPOSITE their velocity.
     void populateFields(const SpatialVoxelGrid3D& grid,
         VectorField3D& electricField, VectorField3D& magneticField,
-        VectorField3D& currentDensity, ScalarField3D& chargeDensity) const;
+        VectorField3D& currentDensity, ScalarField3D& chargeDensity,
+        std::vector<DiagnosticFieldSample>* visualization = nullptr) const;
 
 private:
     std::vector<DebugProjectile> m_projectiles;

@@ -248,13 +248,17 @@ private:
     SpawnDensityRegionGrid3D m_spawnDensityGrid;
     RuntimeConfig m_runtimeConfig;
 
-    // The 8x8x8 physical grid above owns geometry; fields only borrow it.
+    // Field sampling is independent of the fixed 8x8x8 spawn-density grid.
+    // This stable member owns geometry borrowed by all diagnostic fields.
+    SpatialVoxelGrid3D m_fieldVoxelGrid;
     ScalarField3D m_electronDensity, m_electronTemperature, m_chargeDensity;
     VectorField3D m_electricField, m_magneticField, m_currentDensity, m_curlMagneticField;
+    std::vector<DiagnosticFieldSample> m_fieldVisualization;
+    std::vector<glm::vec4> m_electricGlyphColors, m_magneticGlyphColors;
     DebugElectrodynamics m_debugElectrodynamics;
     VectorView m_vectorView = VectorView::Off;
     ScalarView m_scalarView = ScalarView::Off;
-    VectorFieldRenderSettings m_vectorRenderSettings;
+    VectorFieldRenderSettings m_vectorRenderSettings{VectorGlyphScale::LogMagnitude};
     DebugProjectileSpecies m_debugSpecies = DebugProjectileSpecies::Electron;
     Layer3CameraView m_layer3CameraView = Layer3CameraView::Orbit;
 

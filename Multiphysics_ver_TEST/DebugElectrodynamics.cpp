@@ -12,6 +12,43 @@ namespace {
     constexpr double kCoulombFactor = 8.9875517923e9;
     constexpr double kMu0OverFourPi = 1.0e-7;
 
+    struct DipoleCorridor {
+        glm::dvec3 positivePosition;
+        glm::dvec3 positiveToNegative;
+        double lengthSquared;
+    };
+
+    ElectricGlyphClass electricGlyphClass(const glm::dvec3& position,
+        const glm::dvec3& electric, const glm::dvec3& positive,
+        const glm::dvec3& negative, const std::vector<DipoleCorridor>& corridors,
+        double corridorRadiusSquared) {
+        const double positiveStrength = glm::length(positive);
+        const double negativeStrength = glm::length(negative);
+        const double strongest = (std::max)(positiveStrength, negativeStrength);
+        const double weakest = (std::min)(positiveStrength, negativeStrength);
+        const double netStrength = glm::length(electric);
+        // Relative thresholds work for SI single-charge magnitudes as well as
+        // superposed sources. A zero or cancellation field has no bridge.
+        if (strongest > 0.0 && netStrength > 0.0 &&
+            weakest >= strongest * DebugElectrodynamics::kDipoleMinPolarityStrengthRatio) {
+            for (const DipoleCorridor& corridor : corridors) {
+                const glm::dvec3 fromPositive = position - corridor.positivePosition;
+                const double t = glm::dot(fromPositive, corridor.positiveToNegative) /
+                    corridor.lengthSquared;
+                if (t <= 0.0 || t >= 1.0) continue;
+                const glm::dvec3 perpendicular = fromPositive - t * corridor.positiveToNegative;
+                if (glm::dot(perpendicular, perpendicular) > corridorRadiusSquared) continue;
+                const double directionCosine = glm::dot(electric, corridor.positiveToNegative) /
+                    (netStrength * std::sqrt(corridor.lengthSquared));
+                if (directionCosine >= DebugElectrodynamics::kDipoleMinNetDirectionCosine) {
+                    return ElectricGlyphClass::DipoleBridge;
+                }
+            }
+        }
+        return positiveStrength >= negativeStrength ? ElectricGlyphClass::PositiveSource :
+            ElectricGlyphClass::NegativeSource;
+    }
+
     bool finiteVector(const glm::vec3& value) {
         return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
     }
@@ -132,28 +169,64 @@ void DebugElectrodynamics::clear() {
 
 void DebugElectrodynamics::populateFields(const SpatialVoxelGrid3D& grid,
     VectorField3D& electricField, VectorField3D& magneticField,
-    VectorField3D& currentDensity, ScalarField3D& chargeDensity) const {
+    VectorField3D& currentDensity, ScalarField3D& chargeDensity,
+    std::vector<DiagnosticFieldSample>* visualization) const {
     prepareField(electricField, grid);
     prepareField(magneticField, grid);
     prepareField(currentDensity, grid);
     prepareField(chargeDensity, grid);
 
-    // One quarter of a physical voxel edge is numerical debug softening,
+    std::vector<DipoleCorridor> corridors;
+    const double pairDistance = kDipolePairMaxDistanceVoxelEdges * grid.voxelEdgeM;
+    const double corridorRadius = kDipoleCorridorRadiusVoxelEdges * grid.voxelEdgeM;
+    if (visualization) {
+        visualization->assign(grid.voxelCount(), DiagnosticFieldSample{});
+        // Pair detection is done once per sampling pass, not once per voxel.
+        for (const DebugProjectile& positive : m_projectiles) {
+            if (positive.chargeC <= 0.0) continue;
+            for (const DebugProjectile& negative : m_projectiles) {
+                if (negative.chargeC >= 0.0) continue;
+                const glm::dvec3 axis = glm::dvec3(negative.position) - glm::dvec3(positive.position);
+                const double lengthSquared = glm::dot(axis, axis);
+                if (lengthSquared > 0.0 && lengthSquared <= pairDistance * pairDistance) {
+                    corridors.push_back({glm::dvec3(positive.position), axis, lengthSquared});
+                }
+            }
+        }
+    }
+
+    // One quarter of a field voxel edge is numerical debug softening,
     // never an atomic radius or a modification of the stored particle charge.
     const double epsilonM = 0.25 * static_cast<double>(grid.voxelEdgeM);
     for (unsigned int id = 0; id < grid.voxelCount(); ++id) {
         SpatialVoxelRegion cell;
         grid.region(id, cell);
         glm::dvec3 electric(0.0), magnetic(0.0), current(0.0);
+        glm::dvec3 electricPositive(0.0), electricNegative(0.0);
+        glm::dvec3 magneticPositive(0.0), magneticNegative(0.0);
         double charge = 0.0;
         for (const DebugProjectile& projectile : m_projectiles) {
             if (projectile.chargeC == 0.0) continue;
             const glm::dvec3 displacement = glm::dvec3(cell.center) - glm::dvec3(projectile.position);
             const double r2 = glm::dot(displacement, displacement) + epsilonM * epsilonM;
             const double denominator = r2 * std::sqrt(r2);
-            electric += kCoulombFactor * projectile.chargeC * displacement / denominator;
-            magnetic += kMu0OverFourPi * projectile.chargeC *
+            const glm::dvec3 sourceElectric = kCoulombFactor * projectile.chargeC * displacement / denominator;
+            const glm::dvec3 sourceMagnetic = kMu0OverFourPi * projectile.chargeC *
                 glm::cross(glm::dvec3(projectile.velocity), displacement) / denominator;
+            // Keep the ordinary, direct all-source totals independently of
+            // optional visualization classification and polarity sums.
+            electric += sourceElectric;
+            magnetic += sourceMagnetic;
+            if (visualization) {
+                if (projectile.chargeC > 0.0) {
+                    electricPositive += sourceElectric;
+                    magneticPositive += sourceMagnetic;
+                }
+                else {
+                    electricNegative += sourceElectric;
+                    magneticNegative += sourceMagnetic;
+                }
+            }
             // NGP / nearest-cell debug deposition; sum all particles in this
             // half-open cell. This is neither CIC nor a self-consistent PIC step.
             if (inside(projectile.position, cell.minimum, cell.maximum)) {
@@ -166,5 +239,14 @@ void DebugElectrodynamics::populateFields(const SpatialVoxelGrid3D& grid,
         magneticField.set(id, glm::vec3(magnetic));
         currentDensity.set(id, glm::vec3(current));
         chargeDensity.set(id, charge);
+        if (visualization) {
+            DiagnosticFieldSample& sample = (*visualization)[id];
+            sample.electricPositive = glm::vec3(electricPositive);
+            sample.electricNegative = glm::vec3(electricNegative);
+            sample.magneticPositive = glm::vec3(magneticPositive);
+            sample.magneticNegative = glm::vec3(magneticNegative);
+            sample.electricClass = electricGlyphClass(glm::dvec3(cell.center), electric,
+                electricPositive, electricNegative, corridors, corridorRadius * corridorRadius);
+        }
     }
 }

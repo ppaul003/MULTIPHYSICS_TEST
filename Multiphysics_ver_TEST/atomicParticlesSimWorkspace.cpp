@@ -69,21 +69,25 @@ void AtomicParticlesSimWorkspace::syncSimulationDomain(WorkspaceServices& servic
     const auto currentGrid = m_particleSystem->getGridSize();
     const uint dimension = static_cast<uint>(preset->collisionGridDim);
     if (boxSize == m_simulationBoxSizeM && currentGrid.x == dimension &&
-        currentGrid.y == dimension && currentGrid.z == dimension) return;
+        currentGrid.y == dimension && currentGrid.z == dimension &&
+        m_fieldVoxelGrid.dimensions == ivec3(preset->fieldGridDim)) return;
     m_particleSystem->setSimulationDomain(boxSize, make_uint3(dimension, dimension, dimension));
     clearRuntime();
     m_simulationBoxSizeM = boxSize;
     m_baseVoxelGrid.dimensions = ivec3(8);
     m_baseVoxelGrid.origin = vec3(-boxSize * 0.5f);
     m_baseVoxelGrid.voxelEdgeM = boxSize / 8.0f;
-    // Fields borrow this stable member. Reinitialize all seven arrays after
-    // geometry changes; old diagnostic values/projectiles cannot survive it.
+    m_fieldVoxelGrid.dimensions = ivec3(preset->fieldGridDim);
+    m_fieldVoxelGrid.origin = vec3(-boxSize * 0.5f);
+    m_fieldVoxelGrid.voxelEdgeM = boxSize / static_cast<float>(preset->fieldGridDim);
+    // Reinitialize fields against the independent sampling grid after a commit.
     initializeFields();
 }
 
 SimulationDomainState AtomicParticlesSimWorkspace::simulationDomainState() const {
     SimulationDomainState state;
     state.physicalGrid = m_baseVoxelGrid;
+    state.fieldGrid = m_fieldVoxelGrid;
     if (!m_particleSystem) return state;
     const auto dim = m_particleSystem->getGridSize();
     const auto origin = m_particleSystem->getWorldOrigin();
@@ -95,8 +99,8 @@ SimulationDomainState AtomicParticlesSimWorkspace::simulationDomainState() const
     state.collisionCellCount = m_particleSystem->getNumGridCells();
     state.fieldCellCount = m_chargeDensity.size();
     const auto valid = [&](const auto& field) {
-        return field.initialized() && &field.grid() == &m_baseVoxelGrid &&
-            field.size() == m_baseVoxelGrid.voxelCount();
+        return field.initialized() && &field.grid() == &m_fieldVoxelGrid &&
+            field.size() == m_fieldVoxelGrid.voxelCount();
     };
     state.fieldGeometryValid = valid(m_electronDensity) && valid(m_electronTemperature) &&
         valid(m_chargeDensity) && valid(m_electricField) && valid(m_magneticField) &&

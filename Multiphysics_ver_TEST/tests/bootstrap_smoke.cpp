@@ -97,6 +97,8 @@ int main(int argc, char** argv) {
             renderer.setWindowSize(1280, 900);
             renderer.setFOV(60.0f);
             renderer.setSimBoxSize(4);
+            renderer.setGridDimSize(64);
+            renderer.setGridMajorEvery(8);
             TheArbiter arbiter;
             CameraProcessor camera;
             camera.setBehaviorMode(CameraProcessor::CAM_MENU_PREVIEW);
@@ -154,7 +156,7 @@ int main(int argc, char** argv) {
             };
             auto checkDomain = [&](int box) {
                 const int grid = findSimulationPreset(box)->collisionGridDim;
-                for (const auto& state : {host.particleDomainState(), host.multiphysicsDomainState()}) {
+                for (const auto& state : {host.particleDomainState(), host.atomicDomainState()}) {
                     require(state.collisionDimensions == glm::ivec3(grid), "CUDA dimensions follow active preset");
                     require(state.collisionCellCount == static_cast<unsigned int>(grid * grid * grid), "Collision cell table count follows preset");
                     require(state.collisionOrigin == glm::vec3(-box * 0.5f), "CUDA origin follows committed box");
@@ -166,10 +168,16 @@ int main(int argc, char** argv) {
                     SpawnDensityRegion3D region;
                     require(spawnGrid.centeredRegion(state.physicalGrid, region), "Center spawn region remains valid");
                     require(region.volumeM3 == std::pow(box / 4.0f, 3.0f), "2x2x2 spawn volume follows physical geometry");
+                    require(spawnGrid.regionCount(state.physicalGrid) == 64 &&
+                        spawnGrid.selectionCount(state.physicalGrid) == 65, "Spawn selector remains center plus 64 physical regions");
                 }
-                const auto fields = host.multiphysicsDomainState();
-                require(fields.fieldGeometryValid && fields.fieldCellCount == 512, "All seven borrowed field geometries valid with 512 cells");
-
+                const auto fields = host.atomicDomainState();
+                const int fieldDimension = box <= 8 ? 8 : 16;
+                require(fields.fieldGrid.dimensions == glm::ivec3(fieldDimension), "Independent field grid follows 8/16 sampling preset");
+                require(fields.fieldGrid.origin == glm::vec3(-box * 0.5f) &&
+                    fields.fieldGrid.voxelEdgeM == box / float(fieldDimension), "Field sampling geometry covers exact committed domain");
+                require(fields.fieldGeometryValid && fields.fieldCellCount == fieldDimension * fieldDimension * fieldDimension,
+                    "All seven fields borrow valid independent geometry (512/4096 cells)");
             };
             tick();
             require(arbiter.isGlobalShell() && value(0) == "IDLE", "Startup IDLE");
@@ -188,7 +196,7 @@ int main(int argc, char** argv) {
                 const int from = renderer.getSimBoxSize();
                 const int targetGrid = findSimulationPreset(target)->collisionGridDim;
                 const float particleRadius = host.particleDomainState().collisionRadius;
-                const float plasmaRadius = host.multiphysicsDomainState().collisionRadius;
+                const float atomicRadius = host.atomicDomainState().collisionRadius;
                 selectRow("SIMULATION BOX SIZE");
                 for (int i = 0; i < 5 && value(1) != std::to_string(target); ++i) key('d');
                 const std::string presetText = std::to_string(target) + " (" + std::to_string(targetGrid) + "^3)";
@@ -321,7 +329,7 @@ int main(int argc, char** argv) {
                 require(host.boxResizeState().remainingSteps == 0, "Queue drained");
                 checkDomain(target);
                 require(host.particleDomainState().collisionRadius == particleRadius &&
-                    host.multiphysicsDomainState().collisionRadius == plasmaRadius, "Preset transition preserves configured radii");
+                    host.atomicDomainState().collisionRadius == atomicRadius, "Preset transition preserves configured radii");
                 glm::vec3 eyeAfter, directionAfter;
                 camera.getCenterViewRay(eyeAfter, directionAfter);
                 require(glm::length(directionBefore - directionAfter) < 1e-5f &&
@@ -366,27 +374,107 @@ int main(int argc, char** argv) {
             checkDomain(16);
             require(renderer.getSimBoxSize() == 16, "Domain entry preserves committed 16/128 preset");
 
-            auto runPlasma = [&]() {
+            auto runAtomic = [&]() {
+                // Domain entry starts on PARTICLE_SIM; select the new Atomic cartridge explicitly.
+                require(arbiter.isDomainSelection(), "Atomic entry starts from Layer 1");
+                selectRow("MULPHY_SIM SELECTION");
+                for (int i = 0; i < 3 && arbiter.getActiveWorkspace() != TheArbiter::WorkspaceId::ATOMIC_PARTICLES; ++i)
+                    key('d');
+                require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::ATOMIC_PARTICLES, "Atomic workspace reachable");
+                require(host.menu().items.empty(), "Atomic runtime menu absent outside Layer 3");
                 selectRow("CONFIGURE WORKSPACE"); key('e');
-                require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION, "Configure plasma");
+                require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION, "Configure Atomic");
+                selectRow("SELECT VOXEL SPAWN");
+                require(value(6) == "VOXEL_CENTER", "VOXEL_CENTER remains default at every field resolution");
+                key('d');
+                for (int id = 0; id < 64; ++id) {
+                    char expected[16];
+                    std::snprintf(expected, sizeof(expected), "VOXEL_%03d", id);
+                    require(value(6) == expected, "Existing voxel selection ordering remains unchanged");
+                    key('d');
+                }
+                require(value(6) == "VOXEL_CENTER", "Exactly 64 selectable spawn regions wrap back to center");
                 selectRow("TOTAL GAS DENSITY"); key('e');
                 for (unsigned char raw : std::string("1200")) key(raw);
                 key(13);
                 selectRow("PRESS E TO RUN SIM"); key('e');
-                require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "Run plasma");
+                require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "Run Atomic");
                 require(host.presentation().runtimeStatus.objectLine.find("1320") != std::string::npos, "1320 markers retain population semantics");
                 tick();
-                for (unsigned char raw : std::string("fvbcg123")) {
+                auto detail = [&](const std::string& token) {
+                    for (const auto& line : host.presentation().runtimeStatus.detailLines)
+                        if (line.find(token) != std::string::npos) return line;
+                    throw std::runtime_error("Missing runtime detail: " + token);
+                };
+                auto menuCommand = [&](const std::string& token) {
+                    for (const auto& item : host.menu().items)
+                        if (item.enabled && item.label.find(token) != std::string::npos) return item.command;
+                    throw std::runtime_error("Missing Atomic menu command: " + token);
+                };
+                auto selectVector = [&](const std::string& name) {
+                    for (int i = 0; i < 5 && detail("FIELD VIEW:").find(name) == std::string::npos; ++i) key('v');
+                    require(detail("FIELD VIEW:").find(name) != std::string::npos, "Vector field selection reaches requested view");
+                };
+                auto displayedMagnitude = [&]() {
+                    const auto line = detail("FIELD VIEW:");
+                    const auto maximum = line.find(" | MAX: ");
+                    require(maximum != std::string::npos, "Selected field reports magnitude");
+                    return std::stod(line.substr(maximum + 8));
+                };
+                require(host.handleMenuCommand(menuCommand("TEST FIRE")), "Atomic Layer-3 menu command handled");
+                require(detail("TEST FIRE:").find("TEST FIRE: ON") != std::string::npos, "Fire mode actually toggles in Atomic");
+                auto fire = [&]() {
+                    require(host.handlePointerInput(arbiter.translateMouseButton(GLUT_LEFT_BUTTON, GLUT_DOWN, 640, 450)),
+                        "Atomic Layer-3 pointer press handled");
+                    require(host.handlePointerInput(arbiter.translateMouseButton(GLUT_LEFT_BUTTON, GLUT_UP, 640, 450)),
+                        "Atomic Layer-3 pointer release handled");
+                };
+                key('1'); fire();
+                require(detail("TEST FIRE:").find("ACTIVE DEBUG: 1/128") != std::string::npos,
+                    "Center-ray click creates active electron in Atomic");
+                selectVector("ELECTRIC_FIELD");
+                require(detail("FIELD VIEW:").find("SCALE: LOG") != std::string::npos, "Electric field defaults to logarithmic magnitude");
+                const double electricBefore = displayedMagnitude();
+                require(electricBefore > 0.0, "Fired charge sources a nonzero sampled electric field");
+                for (int i = 0; i < 30; ++i) tick();
+                require(displayedMagnitude() > 0.0 && displayedMagnitude() != electricBefore,
+                    "Electric field magnitudes refresh while projectile moves");
+                selectVector("MAGNETIC_FIELD"); tick();
+                require(displayedMagnitude() > 0.0, "Moving electron sources magnetic diagnostics");
+                key('2'); fire(); tick();
+                key('3'); fire(); tick();
+                require(detail("TEST FIRE:").find("ACTIVE DEBUG: 3/128") != std::string::npos,
+                    "Electron, ion and neutral projectiles share active rendering path");
+                for (const auto* name : {"ELECTRIC_FIELD", "MAGNETIC_FIELD", "CURRENT_DENSITY", "CURL_B"}) {
+                    selectVector(name); tick();
+                }
+                for (unsigned char raw : std::string("vbbbggg123")) {
                     const auto routed = arbiter.routeKeyboard(keyboard.onKey(raw, 0, 0));
-                    require(routed.workspaceInput.action == WorkspaceInputAction::RawKey, "Field debug routing");
+                    require(routed.workspaceInput.action == WorkspaceInputAction::RawKey, "Atomic field debug raw-key routing");
                     key(raw); tick();
                 }
+                require(host.handleMenuCommand(menuCommand("Clear test particles")), "Atomic clear command handled");
+                require(detail("TEST FIRE:").find("ACTIVE DEBUG: 0/128") != std::string::npos, "Clear removes projectile sources");
+                selectVector("ELECTRIC_FIELD");
+                require(displayedMagnitude() == 0.0, "Clear refreshes electric field to zero");
+                tick();
                 require(cudaDeviceSynchronize() == cudaSuccess, "CUDA runtime synchronization");
-                key('q'); tick(); key('q'); tick();
+                key('q'); tick();
+                require(host.menu().items.empty() && !host.handlePointerInput(
+                    arbiter.translateMouseButton(GLUT_LEFT_BUTTON, GLUT_DOWN, 640, 450)),
+                    "Layer-3 test firing unavailable after returning to configuration");
+                key('q'); tick();
+                std::printf("PASS: Atomic size %d, independent field grid, 65 spawn choices, menu/pointer firing, dynamic E/B and field rendering\n",
+                    renderer.getSimBoxSize());
             };
-            runPlasma();
+            runAtomic();
+            selectRow("MULPHY_SIM SELECTION"); key('d'); tick();
+            require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::MULTIPHYSICS_SIM &&
+                host.presentation().statusTone == WorkspaceStatusTone::Warning,
+                "Skeletal MULTIPHYSICS_SIM remains separately reachable and unavailable");
+            key('a');
             selectRow("MULPHY_SIM SELECTION"); key('a'); tick();
-            require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIMULATION, "ParticleSim reachable");
+            require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIM, "ParticleSim reachable");
             selectRow("CONFIGURE WORKSPACE"); key('e');
             selectRow("PARTICLE AMOUNT"); key('d'); // nonempty population with unchanged default radius
             selectRow("PRESS E TO RUN SIM"); key('e'); tick();
@@ -403,11 +491,11 @@ int main(int argc, char** argv) {
             require(arbiter.isDomainSelection() && renderer.getSimBoxSize() == 32,
                 "MULTIPHYSICS domain entry preserves committed 32/128");
             checkDomain(32);
-            runPlasma();
+            runAtomic();
             checkDomain(32);
-            std::puts("PASS: size-32 plasma runtime, field debug keys and all seven field geometries");
+            std::puts("PASS: size-32 Atomic runtime, field debug keys and all seven field geometries");
             selectRow("MULPHY_SIM SELECTION"); key('a'); tick();
-            require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIMULATION, "ParticleSim reachable at size 32");
+            require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIM, "ParticleSim reachable at size 32");
             selectRow("CONFIGURE WORKSPACE"); key('e');
             selectRow("PARTICLE AMOUNT"); key('d');
             selectRow("PRESS E TO RUN SIM"); key('e'); tick();
@@ -420,6 +508,12 @@ int main(int argc, char** argv) {
             selectRow("DOMAIN SELECTION"); key('a');
             resize(16, 13);
             resize(8, 13);
+            selectRow("DOMAIN SELECTION"); key('d');
+            selectRow("CONFIG GLOBAL SHELL"); key('e'); settle();
+            runAtomic();
+            key('q'); settle();
+            require(arbiter.isGlobalShell(), "Size-8 Atomic runtime returns to shell");
+            selectRow("DOMAIN SELECTION"); key('a');
             resize(4, 13);
             resize(16, 'e'); // 4 -> 8 -> 16 under one input lock
             resize(4, 13); // 16 -> 8 -> 4
@@ -428,7 +522,7 @@ int main(int argc, char** argv) {
             unsupported();
             selectRow("DOMAIN SELECTION"); key('d');
             selectRow("CONFIG GLOBAL SHELL"); key(13); settle();
-            runPlasma();
+            runAtomic();
             key('q'); settle();
             checkDomain(4);
             std::puts("PASS: resize sequences, center crossing, input lock, geometry propagation, camera scaling, 4/8/16/32 chained presets and runtime");

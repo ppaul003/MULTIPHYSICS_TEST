@@ -8,6 +8,16 @@
 #include <sstream>
 
 namespace {
+    // Display palette and stable SI display reference; neither changes field values.
+    const glm::vec4 kPositiveElectricColor(1.0f, 0.12f, 0.08f, 0.9f);
+    const glm::vec4 kNegativeElectricColor(0.12f, 0.45f, 1.0f, 0.9f);
+    const glm::vec4 kDipoleElectricColor(0.72f, 0.25f, 1.0f, 0.9f);
+    const glm::vec4 kPositiveMagneticColor(0.1f, 1.0f, 0.15f, 0.9f);
+    const glm::vec4 kNegativeMagneticColor(1.0f, 0.9f, 0.08f, 0.9f);
+    // Approximately ten elementary-charge fields at 1 m; fixed across frames
+    // and presets so a moving source changes arrow length at a fixed voxel.
+    constexpr double kElectricGlyphReferenceVm = 1.44e-8;
+
     const char* speciesName(DebugProjectileSpecies species) {
         switch (species) {
         case DebugProjectileSpecies::ArgonIon: return "ARGON_ION";
@@ -29,13 +39,16 @@ bool AtomicParticlesSimWorkspace::layer3Active() const {
 }
 
 void AtomicParticlesSimWorkspace::initializeFields() {
-    m_electronDensity.initialize(m_baseVoxelGrid);
-    m_electronTemperature.initialize(m_baseVoxelGrid);
-    m_chargeDensity.initialize(m_baseVoxelGrid);
-    m_electricField.initialize(m_baseVoxelGrid);
-    m_magneticField.initialize(m_baseVoxelGrid);
-    m_currentDensity.initialize(m_baseVoxelGrid);
-    m_curlMagneticField.initialize(m_baseVoxelGrid);
+    m_electronDensity.initialize(m_fieldVoxelGrid);
+    m_electronTemperature.initialize(m_fieldVoxelGrid);
+    m_chargeDensity.initialize(m_fieldVoxelGrid);
+    m_electricField.initialize(m_fieldVoxelGrid);
+    m_magneticField.initialize(m_fieldVoxelGrid);
+    m_currentDensity.initialize(m_fieldVoxelGrid);
+    m_curlMagneticField.initialize(m_fieldVoxelGrid);
+    m_fieldVisualization.clear();
+    m_electricGlyphColors.clear();
+    m_magneticGlyphColors.clear();
 }
 
 void AtomicParticlesSimWorkspace::clearFieldDebug() {
@@ -47,6 +60,9 @@ void AtomicParticlesSimWorkspace::clearFieldDebug() {
     m_magneticField.clear();
     m_currentDensity.clear();
     m_curlMagneticField.clear();
+    m_fieldVisualization.clear();
+    m_electricGlyphColors.clear();
+    m_magneticGlyphColors.clear();
     m_testFireMode = m_fireClickCaptured = m_freeLookDragging = false;
     std::fill(std::begin(m_freeMovementKeys), std::end(m_freeMovementKeys), false);
     m_vectorView = VectorView::Off;
@@ -59,9 +75,22 @@ void AtomicParticlesSimWorkspace::clearFieldDebug() {
 void AtomicParticlesSimWorkspace::refreshDiagnosticFields() {
     // Only explicitly fired debug projectiles source these diagnostics.
     // The production CUDA population is not a self-consistent PIC plasma.
-    m_debugElectrodynamics.populateFields(m_baseVoxelGrid, m_electricField,
-        m_magneticField, m_currentDensity, m_chargeDensity);
+    m_debugElectrodynamics.populateFields(m_fieldVoxelGrid, m_electricField,
+        m_magneticField, m_currentDensity, m_chargeDensity, &m_fieldVisualization);
     computeCurl(m_magneticField, m_curlMagneticField);
+    m_electricGlyphColors.resize(m_fieldVisualization.size());
+    m_magneticGlyphColors.resize(m_fieldVisualization.size());
+    for (std::size_t id = 0; id < m_fieldVisualization.size(); id++) {
+        const auto& sample = m_fieldVisualization[id];
+        switch (sample.electricClass) {
+        case ElectricGlyphClass::PositiveSource: m_electricGlyphColors[id] = kPositiveElectricColor; break;
+        case ElectricGlyphClass::NegativeSource: m_electricGlyphColors[id] = kNegativeElectricColor; break;
+        case ElectricGlyphClass::DipoleBridge: m_electricGlyphColors[id] = kDipoleElectricColor; break;
+        }
+        // Draw the physical net B; color indicates its locally dominant source polarity.
+        m_magneticGlyphColors[id] = vectorMagnitude(sample.magneticPositive) >= vectorMagnitude(sample.magneticNegative)
+            ? kPositiveMagneticColor : kNegativeMagneticColor;
+    }
 }
 
 void AtomicParticlesSimWorkspace::updateFieldDebug(
@@ -75,7 +104,7 @@ void AtomicParticlesSimWorkspace::updateFieldDebug(
     }
     if (!m_runtimeEnabled || m_paused || frame.deltaTime <= 0.0f ||
         m_debugElectrodynamics.projectiles().empty()) return;
-    m_debugElectrodynamics.update(frame.deltaTime, m_baseVoxelGrid);
+    m_debugElectrodynamics.update(frame.deltaTime, m_fieldVoxelGrid);
     refreshDiagnosticFields();
 }
 
@@ -120,8 +149,17 @@ const char* AtomicParticlesSimWorkspace::scalarViewName() const {
 void AtomicParticlesSimWorkspace::renderFieldDebug(WorkspaceServices& services) {
     if (!services.renderer) return;
     FieldDebugRenderer::drawProjectiles(*services.renderer, m_debugElectrodynamics.projectiles());
-    if (const auto* field = selectedVectorField())
-        FieldDebugRenderer::drawVector(*field, m_vectorRenderSettings);
+    FieldDebugRenderer::drawProjectileVelocities(m_debugElectrodynamics.projectiles(), m_fieldVoxelGrid.voxelEdgeM);
+    if (const auto* field = selectedVectorField()) {
+        auto settings = m_vectorRenderSettings;
+        if (m_vectorView == VectorView::Electric) {
+            settings.referenceMagnitude = kElectricGlyphReferenceVm;
+            FieldDebugRenderer::drawVector(*field, m_electricGlyphColors, settings);
+        }
+        else if (m_vectorView == VectorView::Magnetic)
+            FieldDebugRenderer::drawVector(*field, m_magneticGlyphColors, settings);
+        else FieldDebugRenderer::drawVector(*field, settings);
+    }
     if (const auto* field = selectedScalarField()) FieldDebugRenderer::drawScalar(*field);
 }
 
@@ -135,7 +173,7 @@ bool AtomicParticlesSimWorkspace::handleFieldDebugKey(
     case 'f':
         cancelInput(services);
         m_testFireMode = !m_testFireMode;
-        if (m_testFireMode && m_vectorView == VectorView::Off) m_vectorView = VectorView::Magnetic;
+        if (m_testFireMode && m_vectorView == VectorView::Off) m_vectorView = VectorView::Electric;
         break;
     case '1': m_debugSpecies = DebugProjectileSpecies::Electron; break;
     case '2': m_debugSpecies = DebugProjectileSpecies::ArgonIon; break;
@@ -182,7 +220,7 @@ bool AtomicParticlesSimWorkspace::handlePointerInput(
                 m_debugNotice = "TEST FIRE: CAMERA RAY UNAVAILABLE";
             }
             else {
-                const auto result = m_debugElectrodynamics.fire(m_debugSpecies, origin, direction, m_baseVoxelGrid);
+                const auto result = m_debugElectrodynamics.fire(m_debugSpecies, origin, direction, m_fieldVoxelGrid);
                 if (result == DebugElectrodynamics::FireResult::Fired) {
                     refreshDiagnosticFields();
                     m_debugNotice = std::string("TEST FIRE: ") + speciesName(m_debugSpecies) +
@@ -244,7 +282,7 @@ void AtomicParticlesSimWorkspace::leaveRuntimeCamera(WorkspaceServices& services
 WorkspaceMenuPresentation AtomicParticlesSimWorkspace::buildMenu() const {
     WorkspaceMenuPresentation menu;
     if (!layer3Active()) return menu;
-    menu.items.push_back({"- MULTIPHYSICS FIELD / TEST -", 0, false});
+    menu.items.push_back({"- ATOMIC PARTICLES FIELD / TEST -", 0, false});
     menu.items.push_back({std::string("* CAM VIEW [") +
         (m_layer3CameraView == Layer3CameraView::Free ? "FREE]" : "ORBIT]"), MenuCameraView, true});
     menu.items.push_back({std::string("* TEST FIRE [") + (m_testFireMode ? "ON]" : "OFF]"), MenuFireMode, true});
@@ -285,6 +323,7 @@ void AtomicParticlesSimWorkspace::appendFieldDebugStatus(WorkspaceRuntimeStatus&
     const auto* scalar = selectedScalarField();
     status.detailLines.push_back(std::string("FIELD VIEW: ") + vectorViewName() + " | SCALE: " + scale +
         (vector ? " | MAX: " + magnitudeText(vector->maxMagnitude()) : ""));
+    status.detailLines.push_back("VELOCITY: ORANGE | E: RED + / BLUE - / PURPLE BRIDGE | B: GREEN + / YELLOW -");
     status.detailLines.push_back(std::string("SCALAR: ") + scalarViewName() +
         (scalar ? " | MAX ABS: " + magnitudeText(scalar->maxMagnitude()) : "") +
         (m_scalarView == ScalarView::ChargeDensity ? " | BLUE - / ORANGE +" : ""));

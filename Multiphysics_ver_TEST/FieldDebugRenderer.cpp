@@ -42,52 +42,19 @@ namespace {
         glVertex3f(p.x, p.y, p.z);
     }
 
-    float glyphFraction(double magnitude, double maximum,
-        const VectorFieldRenderSettings& settings) {
-        const double relative = (std::min)(1.0, magnitude / maximum);
-        switch (settings.scale) {
-        case VectorGlyphScale::RelativeMagnitude:
-            return static_cast<float>(relative);
-        case VectorGlyphScale::LogMagnitude: {
-            const double strength = (std::max)(1.0, settings.logStrength);
-            return static_cast<float>(std::log1p(strength * relative) /
-                std::log1p(strength));
-        }
-        default:
-            return 1.0f;
-        }
-    }
-}
-
-void FieldDebugRenderer::drawVector(const VectorField3D& field,
-    const VectorFieldRenderSettings& settings) {
-    if (!field.initialized() || settings.lengthInVoxels <= 0.0f) return;
-    const double maximum = field.maxMagnitude();
-    if (!(maximum > 0.0) || !std::isfinite(maximum)) return;
-
-    ScopedFieldRenderState state;
-    glLineWidth((std::max)(1.0f, settings.lineWidth));
-    glColor4fv(&settings.color.x);
-    glBegin(GL_LINES);
-    for (unsigned int id = 0; id < field.size(); ++id) {
-        const glm::vec3 value = field.get(id);
-        const double magnitude = vectorMagnitude(value);
-        if (!(magnitude > 0.0) || !std::isfinite(magnitude)) continue;
-
-        SpatialVoxelRegion cell;
-        if (!field.grid().region(id, cell)) continue;
-
-        // Double arithmetic is necessary: SI B values from one elementary
-        // charge can be ~1e-26 T; float length-squared would underflow.
-        const glm::vec3 direction(
+    glm::vec3 unitDirection(const glm::vec3& value, double magnitude) {
+        // SI B values from one elementary charge can be ~1e-26 T; float
+        // length-squared would underflow, so normalize in double precision.
+        return glm::vec3(
             static_cast<float>(static_cast<double>(value.x) / magnitude),
             static_cast<float>(static_cast<double>(value.y) / magnitude),
             static_cast<float>(static_cast<double>(value.z) / magnitude));
-        const float length = settings.lengthInVoxels * field.grid().voxelEdgeM *
-            glyphFraction(magnitude, maximum, settings);
-        if (!(length > 0.0f)) continue;
+    }
 
-        const glm::vec3 tip = cell.center + direction * length;
+    // Caller owns GL_LINES and render state; both field and velocity glyphs
+    // use the same arrow shape, with an origin and a display-scaled length.
+    void drawArrow(const glm::vec3& origin, const glm::vec3& direction, float length) {
+        const glm::vec3 tip = origin + direction * length;
         const glm::vec3 reference = std::fabs(direction.y) < 0.9f ?
             glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
         const glm::vec3 side = glm::normalize(glm::cross(direction, reference));
@@ -95,13 +62,53 @@ void FieldDebugRenderer::drawVector(const VectorField3D& field,
         const glm::vec3 neck = tip - direction * (length * 0.25f);
         const float headWidth = length * 0.12f;
 
-        vertex(cell.center); vertex(tip);
+        vertex(origin); vertex(tip);
         vertex(tip); vertex(neck + side * headWidth);
         vertex(tip); vertex(neck - side * headWidth);
         vertex(tip); vertex(neck + otherSide * headWidth);
         vertex(tip); vertex(neck - otherSide * headWidth);
     }
-    glEnd();
+
+    void drawVectorGlyphs(const VectorField3D& field,
+        const VectorFieldRenderSettings& settings,
+        const std::vector<glm::vec4>* perVoxelColors) {
+        if (!field.initialized() || !(settings.lengthInVoxels > 0.0f) ||
+            !std::isfinite(settings.lengthInVoxels)) return;
+        const double maximum = field.maxMagnitude();
+        if (!(maximum > 0.0) || !std::isfinite(maximum)) return;
+
+        ScopedFieldRenderState state;
+        glLineWidth((std::max)(1.0f, settings.lineWidth));
+        glColor4fv(&settings.color.x);
+        glBegin(GL_LINES);
+        for (unsigned int id = 0; id < field.size(); ++id) {
+            const glm::vec3 value = field.get(id);
+            const double magnitude = vectorMagnitude(value);
+            if (!(magnitude > 0.0) || !std::isfinite(magnitude)) continue;
+
+            SpatialVoxelRegion cell;
+            if (!field.grid().region(id, cell)) continue;
+            const float length = settings.lengthInVoxels * field.grid().voxelEdgeM *
+                FieldGlyphDisplay::vectorLengthFraction(magnitude, maximum, settings);
+            if (!(length > 0.0f) || !std::isfinite(length)) continue;
+
+            if (perVoxelColors) glColor4fv(&(*perVoxelColors)[id].x);
+            drawArrow(cell.center, unitDirection(value, magnitude), length);
+        }
+        glEnd();
+    }
+}
+
+void FieldDebugRenderer::drawVector(const VectorField3D& field,
+    const VectorFieldRenderSettings& settings) {
+    drawVectorGlyphs(field, settings, nullptr);
+}
+
+void FieldDebugRenderer::drawVector(const VectorField3D& field,
+    const std::vector<glm::vec4>& perVoxelColors,
+    const VectorFieldRenderSettings& settings) {
+    drawVectorGlyphs(field, settings,
+        perVoxelColors.size() == field.size() ? &perVoxelColors : nullptr);
 }
 
 void FieldDebugRenderer::drawScalar(const ScalarField3D& field,
@@ -149,6 +156,24 @@ void FieldDebugRenderer::drawProjectiles(EuclidRenderer& renderer,
         visuals.push_back(visual);
     }
     renderer.displayDiagnosticParticles(visuals);
+}
+
+void FieldDebugRenderer::drawProjectileVelocities(
+    const std::vector<DebugProjectile>& projectiles, float voxelEdgeM) {
+    if (!(voxelEdgeM > 0.0f) || !std::isfinite(voxelEdgeM) || projectiles.empty()) return;
+    ScopedFieldRenderState state;
+    glLineWidth(2.0f);
+    glColor4f(1.0f, 0.45f, 0.08f, 0.95f);
+    glBegin(GL_LINES);
+    // Every projectile in the diagnostic container is active; update erases
+    // expired sources. These const arrows cannot alter its SI velocity.
+    for (const DebugProjectile& projectile : projectiles) {
+        const double speed = vectorMagnitude(projectile.velocity);
+        const float length = voxelEdgeM * FieldGlyphDisplay::velocityLengthInVoxels(speed);
+        if (!(length > 0.0f) || !std::isfinite(length)) continue;
+        drawArrow(projectile.position, unitDirection(projectile.velocity, speed), length);
+    }
+    glEnd();
 }
 
 void FieldDebugRenderer::drawCrosshair(int viewportWidth, int viewportHeight) {

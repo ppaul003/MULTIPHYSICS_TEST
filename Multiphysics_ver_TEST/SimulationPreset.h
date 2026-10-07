@@ -7,16 +7,17 @@ struct SimulationPreset {
     int boxSize;
     int collisionGridDim;
     int majorEvery;
+    int fieldGridDim;
     bool enabled;
 };
 
 // Ordered ladder: queue construction and runtime geometry share this mapping.
 inline constexpr std::array<SimulationPreset, 4> kSimulationPresets{{
 
-    {4, 64, 8, true}, 
-    {8, 64, 8, true},
-    {16, 128, 16, true}, 
-    {32, 128, 16, true}
+    {4, 64, 8, 8, true},
+    {8, 64, 8, 8, true},
+    {16, 128, 16, 16, true},
+    {32, 128, 16, 16, true}
 }};
 
 inline constexpr int simulationPresetIndex(int boxSize) {

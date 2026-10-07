@@ -1,10 +1,13 @@
 #include "VoxelField3D.h"
 #include "DebugElectrodynamics.h"
+#include "FieldDebugRenderer.h"
+#include "SimulationPreset.h"
 #include "CameraEM.h"
 #include "TheArbiterEM.h"
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -59,6 +62,190 @@ namespace {
         ScalarField3D rho;
         explicit Fields(const SpatialVoxelGrid3D& grid): E(grid),B(grid),J(grid),rho(grid) {}
     };
+    void independentFieldGrid() {
+        for (int box : {4,8,16,32}) {
+            const auto* preset=findSimulationPreset(box);
+            const int fieldDim=box<16 ? 8 : 16;
+            check(preset && preset->fieldGridDim==fieldDim,"independent preset field resolution");
+            check(preset->collisionGridDim==(box<16 ? 64 : 128),"collision mapping preserved");
+            SpatialVoxelGrid3D spawnGrid,fieldGrid;
+            spawnGrid.origin=fieldGrid.origin=glm::vec3(-box*.5f);
+            spawnGrid.voxelEdgeM=box/8.0f;
+            fieldGrid.dimensions=glm::ivec3(preset->fieldGridDim);
+            fieldGrid.voxelEdgeM=static_cast<float>(box)/preset->fieldGridDim;
+            check(spawnGrid.voxelCount()==512,"spawn base stays 8 cubed");
+            check(fieldGrid.voxelCount()==(box<16 ? 512u : 4096u),"field grid sample count");
+            Fields sampled(fieldGrid);
+            check(sampled.E.size()==fieldGrid.voxelCount(),"field allocation follows field geometry");
+            SpawnDensityRegionGrid3D selection;
+            check(selection.regionCount(spawnGrid)==64 && selection.selectionCount(spawnGrid)==65,
+                "spawn-density selection count independent of field resolution");
+            SpawnDensityRegion3D first,last;
+            check(selection.region(spawnGrid,0,first) && selection.region(spawnGrid,63,last),"spawn region endpoints");
+            check(nearVec(first.minimum,glm::vec3(-box*.5f)) && nearVec(last.maximum,glm::vec3(box*.5f)),
+                "spawn regions still span whole domain");
+            check(nearVec(first.center,glm::vec3(-box*.375f)),"voxel-center spawn geometry preserved");
+        }
+    }
+    void diagnosticSampling() {
+        SpatialVoxelGrid3D grid;
+        grid.dimensions=glm::ivec3(9,5,5);
+        grid.voxelEdgeM=1.0f;
+        grid.origin=glm::vec3(-4.5f,-2.5f,-2.5f);
+        auto id=[](int x,int y,int z) { return static_cast<unsigned>((x+4)+9*((y+2)+5*(z+2))); };
+        auto fireAt=[&](DebugElectrodynamics& sim,DebugProjectileSpecies species,
+            const glm::vec3& position,const glm::vec3& direction=glm::vec3(0,0,1)) {
+            // fire() offsets an interior origin slightly along the ray.
+            const auto origin=position-direction*(grid.voxelEdgeM*1.0e-4f);
+            check(sim.fire(species,origin,direction,grid)==DebugElectrodynamics::FireResult::Fired,
+                "diagnostic sampling source fired");
+        };
+        DebugElectrodynamics positive,negative,pair;
+        positive.setSpeedMps(0); negative.setSpeedMps(0); pair.setSpeedMps(0);
+        fireAt(positive,DebugProjectileSpecies::ArgonIon,glm::vec3(-1,0,0));
+        fireAt(negative,DebugProjectileSpecies::Electron,glm::vec3(1,0,0));
+        fireAt(pair,DebugProjectileSpecies::ArgonIon,glm::vec3(-1,0,0));
+        fireAt(pair,DebugProjectileSpecies::Electron,glm::vec3(1,0,0));
+        Fields p(grid),n(grid),combined(grid),uniform(grid);
+        std::vector<DiagnosticFieldSample> pmeta,nmeta,metadata;
+        positive.populateFields(grid,p.E,p.B,p.J,p.rho,&pmeta);
+        negative.populateFields(grid,n.E,n.B,n.J,n.rho,&nmeta);
+        pair.populateFields(grid,combined.E,combined.B,combined.J,combined.rho,&metadata);
+        pair.populateFields(grid,uniform.E,uniform.B,uniform.J,uniform.rho);
+        check(metadata.size()==grid.voxelCount(),"one visualization sample per field voxel");
+        check(p.B.maxMagnitude()==0 && n.B.maxMagnitude()==0,"stationary charges have no B");
+        check(vectorMagnitude(positive.projectiles().front().velocity)==0 &&
+            vectorMagnitude(negative.projectiles().front().velocity)==0,"stationary source velocity stays zero");
+        for(unsigned cell=0;cell<grid.voxelCount();++cell) {
+            SpatialVoxelRegion voxel; grid.region(cell,voxel);
+            check(pmeta[cell].electricClass==ElectricGlyphClass::PositiveSource,"positive E source metadata");
+            if (vectorMagnitude(n.E.get(cell)) > 0.0)
+                check(nmeta[cell].electricClass==ElectricGlyphClass::NegativeSource,"negative E source metadata");
+            check(vectorMagnitude(pmeta[cell].electricNegative)==0 && vectorMagnitude(nmeta[cell].electricPositive)==0,
+                "single-source polarity channels separated");
+            check(glm::dot(glm::dvec3(p.E.get(cell)),glm::dvec3(voxel.center-positive.projectiles()[0].position))>=0,
+                "stationary positive E points outward");
+            check(glm::dot(glm::dvec3(n.E.get(cell)),glm::dvec3(voxel.center-negative.projectiles()[0].position))<=0,
+                "stationary negative E points inward");
+            check(nearVec(combined.E.get(cell),p.E.get(cell)+n.E.get(cell),1e-15),"dipole remains ordinary superposition");
+            check(nearVec(combined.E.get(cell),metadata[cell].electricPositive+metadata[cell].electricNegative,1e-15),
+                "polarity contributions sum to physical E");
+            check(nearVec(combined.E.get(cell),uniform.E.get(cell),0),"metadata does not alter physical E");
+            check(nearVec(combined.B.get(cell),uniform.B.get(cell),0) &&
+                nearVec(combined.J.get(cell),uniform.J.get(cell),0) && combined.rho.get(cell)==uniform.rho.get(cell),
+                "metadata does not alter B or NGP deposition");
+        }
+        check(metadata[id(0,0,0)].electricClass==ElectricGlyphClass::DipoleBridge,"near opposite pair midpoint is bridge");
+        check(combined.E.get(id(0,0,0)).x>0 && vectorMagnitude(combined.E.get(id(0,0,0)))>p.E.maxMagnitude()*.1,
+            "dipole midpoint reinforces toward negative sink");
+        check(metadata[id(-2,0,0)].electricClass==ElectricGlyphClass::PositiveSource &&
+            metadata[id(2,0,0)].electricClass==ElectricGlyphClass::NegativeSource,"outside bridge uses local dominant source");
+        check(metadata[id(0,1,0)].electricClass!=ElectricGlyphClass::DipoleBridge,"off-axis sample outside narrow corridor");
+        check(metadata[id(-1,0,0)].electricClass!=ElectricGlyphClass::DipoleBridge &&
+            metadata[id(1,0,0)].electricClass!=ElectricGlyphClass::DipoleBridge,"source endpoints are not a bridge");
+
+        DebugElectrodynamics farPair;
+        farPair.setSpeedMps(0);
+        fireAt(farPair,DebugProjectileSpecies::ArgonIon,glm::vec3(-3,0,0));
+        fireAt(farPair,DebugProjectileSpecies::Electron,glm::vec3(3,0,0));
+        farPair.populateFields(grid,combined.E,combined.B,combined.J,combined.rho,&metadata);
+        check(metadata[id(0,0,0)].electricClass!=ElectricGlyphClass::DipoleBridge && combined.E.get(id(0,0,0)).x>0,
+            "distant pair stays physical but does not create bridge classification");
+
+        DebugElectrodynamics unequalContributions;
+        unequalContributions.setSpeedMps(0);
+        fireAt(unequalContributions,DebugProjectileSpecies::ArgonIon,glm::vec3(-1.3f,0,0));
+        fireAt(unequalContributions,DebugProjectileSpecies::Electron,glm::vec3(1,0,0));
+        unequalContributions.populateFields(grid,combined.E,combined.B,combined.J,combined.rho,&metadata);
+        check(metadata[id(-1,0,0)].electricClass==ElectricGlyphClass::PositiveSource,
+            "geometric bridge rejected when negative contribution is negligible");
+
+        DebugElectrodynamics reversedNet;
+        reversedNet.setSpeedMps(0);
+        fireAt(reversedNet,DebugProjectileSpecies::ArgonIon,glm::vec3(-1,0,0));
+        fireAt(reversedNet,DebugProjectileSpecies::Electron,glm::vec3(1,0,0));
+        fireAt(reversedNet,DebugProjectileSpecies::ArgonIon,glm::vec3(.25f,0,0));
+        reversedNet.populateFields(grid,combined.E,combined.B,combined.J,combined.rho,&metadata);
+        check(combined.E.get(id(0,0,0)).x<0 && metadata[id(0,0,0)].electricClass!=ElectricGlyphClass::DipoleBridge,
+            "third source reversing net direction prevents fake purple bridge");
+
+        DebugElectrodynamics movingPositive,movingNegative;
+        movingPositive.setSpeedMps(.5f); movingNegative.setSpeedMps(.5f);
+        fireAt(movingPositive,DebugProjectileSpecies::ArgonIon,glm::vec3(-1,0,0),glm::vec3(1,0,0));
+        fireAt(movingNegative,DebugProjectileSpecies::Electron,glm::vec3(-1,0,0),glm::vec3(1,0,0));
+        movingPositive.populateFields(grid,p.E,p.B,p.J,p.rho,&pmeta);
+        movingNegative.populateFields(grid,n.E,n.B,n.J,n.rho,&nmeta);
+        check(p.B.get(id(0,1,0)).z>0 && n.B.get(id(0,1,0)).z<0,"moving charge B circulation follows sign");
+        check(nearVec(pmeta[id(0,1,0)].magneticPositive,p.B.get(id(0,1,0)),0) &&
+            vectorMagnitude(pmeta[id(0,1,0)].magneticNegative)==0,"positive B provenance retained");
+        check(nearVec(nmeta[id(0,1,0)].magneticNegative,n.B.get(id(0,1,0)),0) &&
+            vectorMagnitude(nmeta[id(0,1,0)].magneticPositive)==0,"negative B provenance retained");
+        const double before=vectorMagnitude(p.E.get(id(0,0,0)));
+        const auto directionBefore=glm::normalize(p.E.get(id(0,1,0)));
+        const auto beforePosition=movingPositive.projectiles()[0].position;
+        const auto velocity=movingPositive.projectiles()[0].velocity;
+        movingPositive.update(1,grid);
+        movingPositive.populateFields(grid,p.E,p.B,p.J,p.rho,&pmeta);
+        check(nearVec(movingPositive.projectiles()[0].position,beforePosition+velocity) &&
+            nearVec(movingPositive.projectiles()[0].velocity,velocity,0),"field sampling leaves ballistic trajectory unchanged");
+        check(vectorMagnitude(p.E.get(id(0,0,0)))>before,"approaching charge increases sampled magnitude");
+        check(!nearVec(glm::normalize(p.E.get(id(0,1,0))),directionBefore),"moving source changes fixed-voxel field direction");
+        movingPositive.update(1,grid); // source crosses the sampled voxel center
+        movingPositive.populateFields(grid,p.E,p.B,p.J,p.rho,&pmeta);
+        for(unsigned cell=0;cell<grid.voxelCount();++cell)
+            check(std::isfinite(vectorMagnitude(p.E.get(cell))) && std::isfinite(vectorMagnitude(p.B.get(cell))),
+                "softened near-source fields stay finite");
+
+        DebugElectrodynamics movingPair;
+        movingPair.setSpeedMps(1);
+        fireAt(movingPair,DebugProjectileSpecies::ArgonIon,glm::vec3(-1,0,0),glm::vec3(0,1,0));
+        fireAt(movingPair,DebugProjectileSpecies::Electron,glm::vec3(1,0,0),glm::vec3(0,1,0));
+        movingPair.populateFields(grid,combined.E,combined.B,combined.J,combined.rho,&metadata);
+        check(metadata[id(0,0,0)].electricClass==ElectricGlyphClass::DipoleBridge,"moving pair initially bridges center sample");
+        movingPair.update(1,grid);
+        movingPair.populateFields(grid,combined.E,combined.B,combined.J,combined.rho,&metadata);
+        check(metadata[id(0,0,0)].electricClass!=ElectricGlyphClass::DipoleBridge &&
+            metadata[id(0,1,0)].electricClass==ElectricGlyphClass::DipoleBridge,"bridge follows moving sources between fixed samples");
+        for(unsigned cell=0;cell<grid.voxelCount();++cell)
+            check(nearVec(combined.B.get(cell),metadata[cell].magneticPositive+metadata[cell].magneticNegative,1e-32),
+                "mixed-sign B channels preserve physical superposition");
+        movingPair.clear();
+        movingPair.populateFields(grid,combined.E,combined.B,combined.J,combined.rho,&metadata);
+        check(combined.E.maxMagnitude()==0 && combined.B.maxMagnitude()==0,"clearing sources clears total fields");
+        for(const auto& sample:metadata)
+            check(vectorMagnitude(sample.electricPositive)==0 && vectorMagnitude(sample.electricNegative)==0 &&
+                vectorMagnitude(sample.magneticPositive)==0 && vectorMagnitude(sample.magneticNegative)==0 &&
+                sample.electricClass!=ElectricGlyphClass::DipoleBridge,"clearing sources clears display metadata");
+
+        grid.voxelEdgeM=2.0f; grid.origin*=2.0f;
+        DebugElectrodynamics scaledPair;
+        scaledPair.setSpeedMps(0);
+        fireAt(scaledPair,DebugProjectileSpecies::ArgonIon,glm::vec3(-3,0,0));
+        fireAt(scaledPair,DebugProjectileSpecies::Electron,glm::vec3(3,0,0));
+        scaledPair.populateFields(grid,combined.E,combined.B,combined.J,combined.rho,&metadata);
+        check(metadata[id(0,0,0)].electricClass==ElectricGlyphClass::DipoleBridge,
+            "pair threshold scales with field voxel edge instead of fixed world distance");
+    }
+    void glyphScaling() {
+        VectorFieldRenderSettings settings;
+        settings.scale=VectorGlyphScale::LogMagnitude;
+        settings.referenceMagnitude=1.44e-8;
+        const auto length=[&](double magnitude,double frameMaximum=1e-8) {
+            return FieldGlyphDisplay::vectorLengthFraction(magnitude,frameMaximum,settings);
+        };
+        check(length(1e-10)<length(1e-9) && length(1e-9)<length(1e-8),"log E glyph grows with SI magnitude");
+        check(closeValue(length(1e-9,1e-8),length(1e-9,1e-4),0),"stable reference avoids frame normalization");
+        check(length(1e10)<=1 && length(0)==0 && length(-1)==0 &&
+            length((std::numeric_limits<double>::infinity)())==0 &&
+            length((std::numeric_limits<double>::quiet_NaN)())==0,"E glyph scale bounds and finite handling");
+        using FieldGlyphDisplay::velocityLengthInVoxels;
+        check(velocityLengthInVoxels(0)==0 && velocityLengthInVoxels(-1)==0,"zero velocity has no glyph");
+        check(velocityLengthInVoxels(.1)<velocityLengthInVoxels(.75) &&
+            velocityLengthInVoxels(.75)<velocityLengthInVoxels(2),"velocity glyph grows with speed");
+        check(velocityLengthInVoxels(1e20)<=FieldGlyphDisplay::kMaximumVelocityLengthInVoxels &&
+            velocityLengthInVoxels((std::numeric_limits<double>::infinity)())==0 &&
+            velocityLengthInVoxels((std::numeric_limits<double>::quiet_NaN)())==0,"velocity glyph bounds and finite handling");
+    }
     void projectilesAndSigns() {
         SpatialVoxelGrid3D grid;
         DebugElectrodynamics electron,ion,neutral;
@@ -157,19 +344,20 @@ namespace {
         check(nearVec(origin,menuOrigin*2.0f)&&nearVec(dir,menuDir),"off-axis menu translation scales on every axis");
         TheArbiter arbiter; KeyboardInput keyboard;
         arbiter.setApplicationLayer(TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE);
-        arbiter.setActiveWorkspace(TheArbiter::WorkspaceId::MULTIPHYSICS_SIM);
+        arbiter.setActiveWorkspace(TheArbiter::WorkspaceId::ATOMIC_PARTICLES);
         for(unsigned char key : {'f','F','v','b','c','g','1','2','3'})
-            check(arbiter.routeKeyboard(keyboard.onKey(key,0,0)).hasWorkspaceInput,"debug key routed");
+            check(arbiter.routeKeyboard(keyboard.onKey(key,0,0)).workspaceInput.action==WorkspaceInputAction::RawKey,"Atomic debug key routed");
         check(arbiter.routeKeyboard(keyboard.onKey(' ',0,0)).workspaceInput.action==WorkspaceInputAction::TogglePause,"space pause retained");
         check(arbiter.routeKeyboard(keyboard.onKey('q',0,0)).workspaceInput.action==WorkspaceInputAction::Back,"Q back retained");
         check(arbiter.routeKeyboard(keyboard.onKey(27,0,0)).arbiterCommand==TheArbiter::ArbiterCommand::CMD_EXIT,"escape retained");
-        arbiter.setActiveWorkspace(TheArbiter::WorkspaceId::PARTICLE_SIMULATION);
+        arbiter.setActiveWorkspace(TheArbiter::WorkspaceId::PARTICLE_SIM);
         check(!arbiter.routeKeyboard(keyboard.onKey('f',0,0)).hasWorkspaceInput,"other cartridge unchanged");
     }
 }
 int main() {
     try {
-        fieldsAndCurl(); projectilesAndSigns(); raysAndCapacity(); cameraAndRouting();
+        fieldsAndCurl(); independentFieldGrid(); diagnosticSampling(); glyphScaling();
+        projectilesAndSigns(); raysAndCapacity(); cameraAndRouting();
         std::cout << "PASS: " << checks << " field, curl, electrodynamics, ray, capacity, camera and input checks\n";
         return 0;
     } catch(const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }

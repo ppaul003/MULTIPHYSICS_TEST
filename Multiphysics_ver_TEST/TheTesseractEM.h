@@ -56,6 +56,7 @@ public:
     bool boxResizeActive() const { return m_diagnosticIdle.boxResizeActive(); }
     DiagnosticIdle::BoxResizeState boxResizeState() const { return m_diagnosticIdle.boxResizeState(); }
     SimulationDomainState particleDomainState() const { return m_particleSimWorkspace.simulationDomainState(); }
+    SimulationDomainState atomicDomainState() const { return m_atomicParticlesSimWorkspace.simulationDomainState(); }
     SimulationDomainState multiphysicsDomainState() const { return m_multiPhySim.simulationDomainState(); }
 
 private:
