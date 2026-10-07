@@ -169,7 +169,7 @@ int main(int argc, char** argv) {
                     require(spawnGrid.centeredRegion(state.physicalGrid, region), "Center spawn region remains valid");
                     require(region.volumeM3 == std::pow(box / 4.0f, 3.0f), "2x2x2 spawn volume follows physical geometry");
                     require(spawnGrid.regionCount(state.physicalGrid) == 64 &&
-                        spawnGrid.selectionCount(state.physicalGrid) == 65, "Spawn selector remains center plus 64 physical regions");
+                        spawnGrid.selectionCount(state.physicalGrid) == 66, "Spawn selector is whole domain, center, and 64 physical regions");
                 }
                 const auto fields = host.atomicDomainState();
                 const int fieldDimension = box <= 8 ? 8 : 16;
@@ -504,6 +504,90 @@ int main(int argc, char** argv) {
                 std::printf("PASS: %s shared sub-layers 0-3, all edges, TAB retention, Q/reset, pause, exclusive input and legacy menu\n", mode.c_str());
             };
 
+            auto checkSpawnSelection = [&]() {
+                selectRow("SELECT VOXEL SPAWN");
+                auto selectedValue = [&]() {
+                    for (const auto& section : host.presentation().sections)
+                        for (const auto& row : section.rows) if (row.selected) return row.value;
+                    throw std::runtime_error("No selected spawn row");
+                };
+                const auto whole = "[" + std::to_string(renderer.getSimBoxSize()) + " MICRO METER]^3";
+                require(selectedValue() == whole, "Default whole-domain label follows current box size");
+                tick(); // Render the whole-domain preview through the real workspace.
+                key('d'); require(selectedValue() == "VOXEL_CENTER", "Center follows whole domain"); tick();
+                key('d');
+                for (int id=0; id<64; ++id) {
+                    char expected[16]; std::snprintf(expected,sizeof(expected),"VOXEL_%03d",id);
+                    require(selectedValue() == expected, "Regular spawn labels retain all 64 regions in order");
+                    if (id==0 || id==63) tick();
+                    key('d');
+                }
+                require(selectedValue() == whole, "66 selections wrap forward to whole domain");
+                key('a'); require(selectedValue() == "VOXEL_063", "Reverse cycling wraps to final regular region");
+                key('d'); require(selectedValue() == whole, "Whole-domain selection restored");
+            };
+            auto checkSpawnPositions = [&](bool atomic) {
+                // Render without update so readback observes initialization, before any physics step.
+                host.render(frame);
+                glFinish();
+                require(cudaDeviceSynchronize() == cudaSuccess, "Spawn initialization CUDA synchronization");
+                GLint positionVbo=0, previousBuffer=0;
+                glGetIntegerv(GL_VERTEX_ARRAY_BUFFER_BINDING,&positionVbo);
+                glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&previousBuffer);
+                require(positionVbo!=0, "Workspace draws an actual particle position VBO");
+                const auto status=host.presentation().runtimeStatus.objectLine;
+                const int count=std::stoi(status.substr(status.find(':')+1));
+                require(count>=100, "Nonempty population for distribution verification");
+                std::vector<float> positions(count*4);
+                glBindBuffer(GL_ARRAY_BUFFER,positionVbo);
+                glGetBufferSubData(GL_ARRAY_BUFFER,0,positions.size()*sizeof(float),positions.data());
+                glBindBuffer(GL_ARRAY_BUFFER,previousBuffer);
+                require(glGetError()==GL_NO_ERROR, "Actual workspace spawn VBO readback");
+                const float half=renderer.getSimBoxSize()*.5f;
+                auto checkRange = [&](int begin,int end) {
+                    glm::vec3 low(half), high(-half);
+                    for(int i=begin;i<end;++i) for(int axis=0;axis<3;++axis) {
+                        const float p=positions[i*4+axis];
+                        require(std::isfinite(p) && p>-half && p<half, "Spawned particle stays strictly inside domain");
+                        low[axis]=(std::min)(low[axis],p); high[axis]=(std::max)(high[axis],p);
+                    }
+                    for(int axis=0;axis<3;++axis)
+                        require(low[axis]<-half*.7f && high[axis]>half*.7f,
+                            "Particles cover both outer sides of every axis, beyond center composite region");
+                };
+                if (atomic) {
+                    require(count==1320, "Atomic whole-domain population unchanged");
+                    checkRange(0,1080); checkRange(1080,1200); checkRange(1200,1320);
+                } else checkRange(0,count);
+                std::printf("PASS: %s size %d whole-domain spawn; GPU positions span all axes%s\n",
+                    atomic ? "ATOMIC_PARTICLES" : "PARTICLE_SIM",renderer.getSimBoxSize(),
+                    atomic ? " for neutrals, ions and electrons" : "");
+            };
+            auto configureParticleSpawn = [&]() {
+                checkSpawnSelection();
+                selectRow("PARTICLE RESET MODE");
+                // Preserve production defaults; select the existing RANDOM mode for this test.
+                auto resetMode = [&]() {
+                    for (const auto& section : host.presentation().sections)
+                        for (const auto& row : section.rows)
+                            if (row.label.find("PARTICLE RESET MODE")!=std::string::npos) return row.value;
+                    return std::string();
+                };
+                if (resetMode()!="RANDOM") key('d');
+                require(resetMode()=="RANDOM", "Existing random reset mode selected");
+            };
+            auto runParticleSpawn = [&]() {
+                selectRow("MULPHY_SIM SELECTION");
+                for(int attempt=0; attempt<4 && arbiter.getActiveWorkspace()!=TheArbiter::WorkspaceId::PARTICLE_SIM; ++attempt) key('a');
+                require(arbiter.getActiveWorkspace()==TheArbiter::WorkspaceId::PARTICLE_SIM, "Particle workspace reachable");
+                selectRow("CONFIGURE WORKSPACE"); key('e');
+                configureParticleSpawn();
+                selectRow("PARTICLE AMOUNT"); key('d');
+                selectRow("PRESS E TO RUN SIM"); key('e');
+                checkSpawnPositions(false); tick();
+                key('q'); key('q');
+            };
+
             auto runAtomic = [&]() {
                 // Domain entry starts on PARTICLE_SIM; select the new Atomic cartridge explicitly.
                 require(arbiter.isDomainSelection(), "Atomic entry starts from Layer 1");
@@ -514,22 +598,15 @@ int main(int argc, char** argv) {
                 require(host.menu().items.empty(), "Atomic runtime menu absent outside Layer 3");
                 selectRow("CONFIGURE WORKSPACE"); key('e');
                 require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION, "Configure Atomic");
-                selectRow("SELECT VOXEL SPAWN");
-                require(value(6) == "VOXEL_CENTER", "VOXEL_CENTER remains default at every field resolution");
-                key('d');
-                for (int id = 0; id < 64; ++id) {
-                    char expected[16];
-                    std::snprintf(expected, sizeof(expected), "VOXEL_%03d", id);
-                    require(value(6) == expected, "Existing voxel selection ordering remains unchanged");
-                    key('d');
-                }
-                require(value(6) == "VOXEL_CENTER", "Exactly 64 selectable spawn regions wrap back to center");
+                checkSpawnSelection();
                 selectRow("TOTAL GAS DENSITY"); key('e');
+                for (int digit=0; digit<5; ++digit) key(8); // Replace any retained draft value.
                 for (unsigned char raw : std::string("1200")) key(raw);
                 key(13);
                 selectRow("PRESS E TO RUN SIM"); key('e');
                 require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "Run Atomic");
-                require(host.presentation().runtimeStatus.objectLine.find("1320") != std::string::npos, "1320 markers retain population semantics");
+                require(host.presentation().runtimeStatus.objectLine.find("1320/") != std::string::npos, "1320 markers retain population semantics");
+                checkSpawnPositions(true);
                 checkSubLayers(true);
                 tick();
                 auto detail = [&](const std::string& token) {
@@ -595,7 +672,7 @@ int main(int argc, char** argv) {
                     arbiter.translateMouseButton(GLUT_LEFT_BUTTON, GLUT_DOWN, 640, 450)),
                     "Layer-3 test firing unavailable after returning to configuration");
                 key('q'); tick();
-                std::printf("PASS: Atomic size %d, independent field grid, 65 spawn choices, menu/pointer firing, dynamic E/B and field rendering\n",
+                std::printf("PASS: Atomic size %d, independent field grid, 66 spawn choices, menu/pointer firing, dynamic E/B and field rendering\n",
                     renderer.getSimBoxSize());
             };
             runAtomic();
@@ -607,8 +684,9 @@ int main(int argc, char** argv) {
             selectRow("MULPHY_SIM SELECTION"); key('a'); tick();
             require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIM, "ParticleSim reachable");
             selectRow("CONFIGURE WORKSPACE"); key('e');
+            configureParticleSpawn();
             selectRow("PARTICLE AMOUNT"); key('d'); // nonempty population with unchanged default radius
-            selectRow("PRESS E TO RUN SIM"); key('e'); tick();
+            selectRow("PRESS E TO RUN SIM"); key('e'); checkSpawnPositions(false); tick();
             checkSubLayers(false);
             require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "ParticleSim runs at box 16");
             require(cudaDeviceSynchronize() == cudaSuccess, "ParticleSim CUDA update at box 16");
@@ -629,8 +707,9 @@ int main(int argc, char** argv) {
             selectRow("MULPHY_SIM SELECTION"); key('a'); tick();
             require(arbiter.getActiveWorkspace() == TheArbiter::WorkspaceId::PARTICLE_SIM, "ParticleSim reachable at size 32");
             selectRow("CONFIGURE WORKSPACE"); key('e');
+            configureParticleSpawn();
             selectRow("PARTICLE AMOUNT"); key('d');
-            selectRow("PRESS E TO RUN SIM"); key('e'); tick();
+            selectRow("PRESS E TO RUN SIM"); key('e'); checkSpawnPositions(false); tick();
             checkSubLayers(false);
             require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "Nonempty ParticleSim runs at box 32");
             require(cudaDeviceSynchronize() == cudaSuccess, "ParticleSim CUDA update at box 32");
@@ -644,6 +723,7 @@ int main(int argc, char** argv) {
             selectRow("DOMAIN SELECTION"); key('d');
             selectRow("CONFIG GLOBAL SHELL"); key('e'); settle();
             runAtomic();
+            runParticleSpawn();
             key('q'); settle();
             require(arbiter.isGlobalShell(), "Size-8 Atomic runtime returns to shell");
             selectRow("DOMAIN SELECTION"); key('a');
@@ -656,6 +736,7 @@ int main(int argc, char** argv) {
             selectRow("DOMAIN SELECTION"); key('d');
             selectRow("CONFIG GLOBAL SHELL"); key(13); settle();
             runAtomic();
+            runParticleSpawn();
             key('q'); settle();
             checkDomain(4);
             std::puts("PASS: resize sequences, center crossing, input lock, geometry propagation, camera scaling, 4/8/16/32 chained presets and runtime");

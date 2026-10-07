@@ -190,7 +190,7 @@ private:
 	static float radiusPreset(int index);
 
 	static std::string radiusText(float radius);
-	static std::string spawnSelectionText(unsigned int selectionIndex);
+	std::string spawnSelectionText(unsigned int selectionIndex) const;
 
 	const char* gridLayoutName() const;
 	const char* colorModeName() const;

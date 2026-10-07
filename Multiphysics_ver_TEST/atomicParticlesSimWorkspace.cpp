@@ -690,6 +690,12 @@ void AtomicParticlesSimWorkspace::renderSelectedSpawnRegion(WorkspaceServices& s
         return;
     }
 
+    // Whole-domain preview has no 2x2x2 constituent geometry.
+    if (m_draftConfig.spawnSelectionIndex == 0) {
+        services.renderer->drawHighlightedVoxel(selectedRegion.center, selectedRegion.halfExtent, 4.0f);
+        return;
+    }
+
     // Draw each constituent base voxel so the 2x2x2 physical subdivision
     // remains visible, then reinforce the continuous composite boundary.
     for (const SpatialVoxelRegion& baseVoxel :
@@ -1180,13 +1186,16 @@ unsigned int AtomicParticlesSimWorkspace::requestedMarkerCount() const {
 }
 
 string AtomicParticlesSimWorkspace::spawnSelectionText(
-    unsigned int selectionIndex) {
-    if (selectionIndex == 0) {
+    unsigned int selectionIndex) const {
+    // Presentation label only: existing world-space units remain unchanged.
+    if (selectionIndex == 0)
+        return "[" + std::to_string(static_cast<int>(m_simulationBoxSizeM)) + " MICRO METER]^3";
+    if (selectionIndex == 1) {
         return "VOXEL_CENTER";
     }
 
     const unsigned int voxelId =
-        selectionIndex - 1;
+        selectionIndex - 2;
 
     ostringstream stream;
 

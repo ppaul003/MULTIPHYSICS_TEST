@@ -66,9 +66,9 @@ struct SpatialVoxelGrid3D {
     }
 };
 
-// A user-selectable physical spawn volume assembled from eight base voxels.
-// Constituents are ordered X-fastest, then Y, then Z within the local 2x2x2
-// subdivision.
+// A user-selectable physical spawn volume. Whole-domain regions (index -2)
+// have no constituents; center/regular regions contain eight base voxels,
+// ordered X-fastest, then Y, then Z within the local 2x2x2 subdivision.
 struct SpawnDensityRegion3D {
     unsigned int id = 0;
     glm::ivec3 index = glm::ivec3(0);
@@ -118,7 +118,7 @@ struct SpawnDensityRegionGrid3D {
     }
 
     unsigned int selectionCount(const SpatialVoxelGrid3D& baseGrid) const {
-        return regionCount(baseGrid) + 1;
+        return regionCount(baseGrid) + 2;
     }
 
     bool region(const SpatialVoxelGrid3D& baseGrid,
@@ -271,27 +271,35 @@ struct SpawnDensityRegionGrid3D {
         return true;
     }
 
-    bool selection(
-        const SpatialVoxelGrid3D& baseGrid, 
-        unsigned int selectionIndex, 
+    bool wholeDomainRegion(
+        const SpatialVoxelGrid3D& baseGrid,
         SpawnDensityRegion3D& result) const {
-
-        // Selection 0 is the special center volume.
-        if (selectionIndex == 0) {
-            return centeredRegion(baseGrid, result);
+        if (baseGrid.dimensions.x <= 0 || baseGrid.dimensions.y <= 0 ||
+            baseGrid.dimensions.z <= 0 || baseGrid.voxelEdgeM <= 0.0f) {
+            return false;
         }
-
-        // Everything after CENTER maps to the existing
-        // physical region IDs.
-        //
-        // selection 1  -> region 0
-        // selection 2  -> region 1
-        // ...
-        // selection 64 -> region 63
-        const unsigned int regularRegionId = selectionIndex - 1;
-
-        return region(baseGrid, regularRegionId, result);
+        const glm::vec3 domainSize = glm::vec3(baseGrid.dimensions) * baseGrid.voxelEdgeM;
+        result = SpawnDensityRegion3D{}; // Never retain constituents from a previous selection.
+        result.id = regionCount(baseGrid) + 1;
+        result.index = glm::ivec3(-2);
+        result.minimum = baseGrid.origin;
+        result.maximum = baseGrid.origin + domainSize;
+        result.center = (result.minimum + result.maximum) * 0.5f;
+        result.halfExtent = domainSize * 0.5f;
+        result.volumeM3 = domainSize.x * domainSize.y * domainSize.z;
+        return true;
     }
+
+    bool selection(
+        const SpatialVoxelGrid3D& baseGrid,
+        unsigned int selectionIndex,
+        SpawnDensityRegion3D& result) const {
+        // 0: whole domain; 1: centered volume; 2..65: regular regions 0..63.
+        if (selectionIndex == 0) return wholeDomainRegion(baseGrid, result);
+        if (selectionIndex == 1) return centeredRegion(baseGrid, result);
+        return region(baseGrid, selectionIndex - 2, result);
+    }
+
 };
 
 // Immutable-by-value diagnostic snapshot of a workspace's committed geometry.

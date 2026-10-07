@@ -79,13 +79,36 @@ namespace {
             Fields sampled(fieldGrid);
             check(sampled.E.size()==fieldGrid.voxelCount(),"field allocation follows field geometry");
             SpawnDensityRegionGrid3D selection;
-            check(selection.regionCount(spawnGrid)==64 && selection.selectionCount(spawnGrid)==65,
+            check(selection.regionCount(spawnGrid)==64 && selection.selectionCount(spawnGrid)==66,
                 "spawn-density selection count independent of field resolution");
             SpawnDensityRegion3D first,last;
             check(selection.region(spawnGrid,0,first) && selection.region(spawnGrid,63,last),"spawn region endpoints");
             check(nearVec(first.minimum,glm::vec3(-box*.5f)) && nearVec(last.maximum,glm::vec3(box*.5f)),
                 "spawn regions still span whole domain");
             check(nearVec(first.center,glm::vec3(-box*.375f)),"voxel-center spawn geometry preserved");
+            SpawnDensityRegion3D chosen, reference;
+            check(selection.selection(spawnGrid,0,chosen) && chosen.index==glm::ivec3(-2), "whole domain is selection zero");
+            check(nearVec(chosen.minimum,glm::vec3(-box*.5f)) && nearVec(chosen.maximum,glm::vec3(box*.5f)) &&
+                nearVec(chosen.center,glm::vec3(0)) && nearVec(chosen.halfExtent,glm::vec3(box*.5f)) &&
+                closeValue(chosen.volumeM3,box*box*box), "whole-domain bounds and volume follow resize without unit scaling");
+            check(selection.selection(spawnGrid,1,chosen) && chosen.index==glm::ivec3(-1) &&
+                nearVec(chosen.minimum,glm::vec3(-box*.125f)) && nearVec(chosen.maximum,glm::vec3(box*.125f)),
+                "selection one preserves exact center geometry");
+            for(unsigned id=0; id<64; ++id) {
+                check(selection.selection(spawnGrid,id+2,chosen) && selection.region(spawnGrid,id,reference), "all regular selections retained");
+                const glm::ivec3 index(id%4,(id/4)%4,id/16);
+                check(chosen.index==index && nearVec(chosen.minimum,spawnGrid.origin+glm::vec3(index)*(box/4.0f)) &&
+                    nearVec(chosen.maximum,reference.maximum), "regular region locations unchanged");
+                for(unsigned voxel=0; voxel<8; ++voxel)
+                    check(chosen.constituentBaseVoxels[voxel].id==reference.constituentBaseVoxels[voxel].id &&
+                        nearVec(chosen.constituentBaseVoxels[voxel].center,reference.constituentBaseVoxels[voxel].center),
+                        "regular preview constituents unchanged");
+            }
+            check(!selection.selection(spawnGrid,66,chosen), "selection upper bound rejected");
+            check(selection.wholeDomainRegion(spawnGrid,chosen), "whole selection overwrites old regular region");
+            for(const auto& voxel:chosen.constituentBaseVoxels)
+                check(voxel.volumeM3==0, "whole domain does not retain bogus constituent geometry");
+
         }
     }
     void diagnosticSampling() {

@@ -213,7 +213,7 @@ private:
     const VectorField3D* selectedVectorField() const;
     const ScalarField3D* selectedScalarField() const;
     
-    static std::string spawnSelectionText(unsigned int selectionIndex);
+    std::string spawnSelectionText(unsigned int selectionIndex) const;
 
     const char* vectorViewName() const;
     const char* scalarViewName() const;
