@@ -4,6 +4,8 @@
 #include "VoxelField3D.h"
 #include "DebugElectrodynamics.h"
 #include "rendererEM_Euclid.h"
+#include "fieldSystem.h"
+#include <cstddef>
 
 #include <algorithm>
 #include <cmath>
@@ -206,3 +208,36 @@ void FieldDebugRenderer::drawCrosshair(int viewportWidth, int viewportHeight) {
     glPopMatrix();
     glMatrixMode(matrixMode);
 }
+
+// Consume already-built VBOs; no ownership or GPU-to-CPU field readback here.
+namespace {
+    void drawFieldVbo(unsigned vbo, unsigned count, GLenum primitive, float pointSize) {
+        if (!vbo || !count) return;
+        ScopedFieldRenderState state;
+        GLint previousBuffer=0;
+        glGetIntegerv(GL_ARRAY_BUFFER_BINDING,&previousBuffer);
+        glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT);
+        glBindBuffer(GL_ARRAY_BUFFER,vbo);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_COLOR_ARRAY);
+        glDisableClientState(GL_NORMAL_ARRAY);
+        glVertexPointer(4,GL_FLOAT,sizeof(FieldGlyphVertex),
+            reinterpret_cast<const void*>(offsetof(FieldGlyphVertex,position)));
+        glColorPointer(4,GL_FLOAT,sizeof(FieldGlyphVertex),
+            reinterpret_cast<const void*>(offsetof(FieldGlyphVertex,color)));
+        glEnable(GL_ALPHA_TEST);
+        glAlphaFunc(GL_GREATER,0.0f);
+        glLineWidth(1.5f);
+        glPointSize((std::max)(1.0f,pointSize));
+        glDrawArrays(primitive,0,static_cast<GLsizei>(count));
+        glPopClientAttrib();
+        glBindBuffer(GL_ARRAY_BUFFER,previousBuffer);
+    }
+}
+void FieldDebugRenderer::drawElectricField(const FieldSystem& fields) {
+    drawFieldVbo(fields.getGlyphBuffer(),fields.getGlyphVertexCount(),GL_LINES,1);
+}
+void FieldDebugRenderer::drawScalarField(const FieldSystem& fields, float pointSize) {
+    drawFieldVbo(fields.getScalarBuffer(),fields.getScalarVertexCount(),GL_POINTS,pointSize);
+}
+

@@ -43,6 +43,7 @@ bool Tesseract::initialize(WorkspaceServices services) {
 
 void Tesseract::shutdown() {
     if (m_activeWorkspace) m_activeWorkspace->exit(m_services);
+    m_atomicParticlesSimWorkspace.releaseFieldResources();
     m_activeWorkspace = nullptr;
 }
 

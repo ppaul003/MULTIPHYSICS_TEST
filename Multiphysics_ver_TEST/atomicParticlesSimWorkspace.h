@@ -16,12 +16,15 @@
 #include "particleSystem.h"
 #include "DebugElectrodynamics.h"
 #include "FieldDebugRenderer.h"
+#include "fieldSystem.h"
 
 class AtomicParticlesSimWorkspace final : public IWorkspace {
 public:
 
     bool initialize(WorkspaceServices& services) override;
     void syncSimulationDomain(WorkspaceServices& services);
+    // Called by the workspace host before OpenGL/CUDA context teardown.
+    void releaseFieldResources() { m_fieldSystem.reset(); m_fieldMirrorReady = false; }
     SimulationDomainState simulationDomainState() const;
     void enter(WorkspaceServices& services) override;
     void exit(WorkspaceServices& services) override;
@@ -200,12 +203,13 @@ private:
 
     enum class VectorView { Off, Electric, Magnetic, Current, CurlB, Count };
     enum class ScalarView { Off, ElectronDensity, ElectronTemperature, ChargeDensity, Count };
-    enum DebugMenuCommand { MenuCameraView = 100, MenuFireMode, MenuClearDebug };
+    enum DebugMenuCommand { MenuCameraView = 100, MenuFireMode, MenuClearDebug, MenuFieldBackend };
 
     bool layer3Active() const;
     void initializeFields();
     void clearFieldDebug();
     void refreshDiagnosticFields();
+    bool mirrorDiagnosticFields();
     void updateFieldDebug(const WorkspaceFrameContext& frame, WorkspaceServices& services);
     void renderFieldDebug(WorkspaceServices& services);
     bool handleFieldDebugKey(const WorkspaceInputEvent& input, WorkspaceServices& services);
@@ -241,6 +245,10 @@ private:
     static constexpr unsigned int kResetSeed = 1973;
 
     std::unique_ptr<ParticleSystem> m_particleSystem;
+    std::unique_ptr<FieldSystem> m_fieldSystem;
+    FieldBackend m_fieldBackend = FieldBackend::CUDA;
+    bool m_fieldMirrorReady = false;
+    std::vector<float4> m_fieldGlyphPalette;
     std::string m_statusLine = "READY: MULTIPHY_SIM MODE ONLINE.";
 
     std::vector<float> m_radii;
@@ -293,4 +301,3 @@ private:
 };
 
 #endif
-

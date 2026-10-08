@@ -169,7 +169,7 @@ int main(int argc, char** argv) {
                     require(spawnGrid.centeredRegion(state.physicalGrid, region), "Center spawn region remains valid");
                     require(region.volumeM3 == std::pow(box / 4.0f, 3.0f), "2x2x2 spawn volume follows physical geometry");
                     require(spawnGrid.regionCount(state.physicalGrid) == 64 &&
-                        spawnGrid.selectionCount(state.physicalGrid) == 65, "Spawn selector remains center plus 64 physical regions");
+                        spawnGrid.selectionCount(state.physicalGrid) == 66, "Spawn selector includes whole domain, center and 64 physical regions");
                 }
                 const auto fields = host.atomicDomainState();
                 const int fieldDimension = box <= 8 ? 8 : 16;
@@ -385,7 +385,10 @@ int main(int argc, char** argv) {
                 selectRow("CONFIGURE WORKSPACE"); key('e');
                 require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION, "Configure Atomic");
                 selectRow("SELECT VOXEL SPAWN");
-                require(value(6) == "VOXEL_CENTER", "VOXEL_CENTER remains default at every field resolution");
+                require(value(6) == "[" + std::to_string(renderer.getSimBoxSize()) + " MICRO METER]^3",
+                    "Whole-domain spawn remains default at every field resolution");
+                key('d');
+                require(value(6) == "VOXEL_CENTER", "Centered spawn remains the next option");
                 key('d');
                 for (int id = 0; id < 64; ++id) {
                     char expected[16];
@@ -393,7 +396,10 @@ int main(int argc, char** argv) {
                     require(value(6) == expected, "Existing voxel selection ordering remains unchanged");
                     key('d');
                 }
-                require(value(6) == "VOXEL_CENTER", "Exactly 64 selectable spawn regions wrap back to center");
+                require(value(6) == "[" + std::to_string(renderer.getSimBoxSize()) + " MICRO METER]^3",
+                    "Whole-domain option follows the 64 physical regions");
+                key('d');
+                require(value(6) == "VOXEL_CENTER", "Whole-domain option wraps back to center");
                 selectRow("TOTAL GAS DENSITY"); key('e');
                 for (unsigned char raw : std::string("1200")) key(raw);
                 key(13);
@@ -439,6 +445,19 @@ int main(int argc, char** argv) {
                 for (int i = 0; i < 30; ++i) tick();
                 require(displayedMagnitude() > 0.0 && displayedMagnitude() != electricBefore,
                     "Electric field magnitudes refresh while projectile moves");
+                key(' '); // Freeze source positions while comparing display backends.
+                tick();
+                const double frozenElectric = displayedMagnitude();
+                require(detail("FIELD DISPLAY:").find("CUDA E/SCALAR") != std::string::npos,
+                    "CUDA field display active after real drawing");
+                key('h'); tick();
+                require(detail("FIELD DISPLAY:").find("CPU REFERENCE") != std::string::npos &&
+                    displayedMagnitude() == frozenElectric, "CPU display toggle preserves stored physics");
+                require(host.handleMenuCommand(menuCommand("FIELD DISPLAY")), "Field display menu toggle handled");
+                tick();
+                require(detail("FIELD DISPLAY:").find("CUDA E/SCALAR") != std::string::npos &&
+                    displayedMagnitude() == frozenElectric, "CUDA display restored without changing fields");
+                key(' ');
                 selectVector("MAGNETIC_FIELD"); tick();
                 require(displayedMagnitude() > 0.0, "Moving electron sources magnetic diagnostics");
                 key('2'); fire(); tick();
@@ -464,7 +483,7 @@ int main(int argc, char** argv) {
                     arbiter.translateMouseButton(GLUT_LEFT_BUTTON, GLUT_DOWN, 640, 450)),
                     "Layer-3 test firing unavailable after returning to configuration");
                 key('q'); tick();
-                std::printf("PASS: Atomic size %d, independent field grid, 65 spawn choices, menu/pointer firing, dynamic E/B and field rendering\n",
+                std::printf("PASS: Atomic size %d, independent field grid, 66 spawn choices, firing, dynamic E/B, CPU/CUDA field drawing\n",
                     renderer.getSimBoxSize());
             };
             runAtomic();

@@ -3,6 +3,8 @@
 
 #include <cuda_runtime.h>
 #include <vector_types.h>
+#include <cstdint>
+#include <type_traits>
 
 typedef unsigned int uint;
 typedef unsigned char uchar;
@@ -211,5 +213,23 @@ struct FieldGlyphVertex {
     float4 position;
     float4 color;
 };
+
+// Visual settings only. Fixed slots are transparent below threshold; SI arrays
+// are never scaled or clipped by these parameters. Stride applies per axis.
+struct FieldRenderParams {
+    unsigned stride = 1;
+    unsigned vectorScale = 2; // 0 direction, 1 relative, 2 logarithmic
+    double vectorThreshold = 0.0;
+    double scalarThreshold = 0.0;
+    double vectorReference = 1.44e-8;
+    double scalarReference = 1.0e-18;
+    double logStrength = 1000.0;
+    float lengthInCells = 0.65f;
+    float4 vectorColor = make_float4(0.2f, 0.9f, 1.0f, 0.85f);
+};
+
+static_assert(std::is_trivial<ParticleSimParams>::value, "CUDA constant POD");
+static_assert(std::is_trivial<FieldGridParams>::value, "CUDA constant POD");
+static_assert(std::is_trivial<FieldSolverParams>::value, "CUDA constant POD");
 
 #endif

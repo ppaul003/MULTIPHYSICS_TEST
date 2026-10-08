@@ -78,7 +78,7 @@ namespace {
             Fields sampled(fieldGrid);
             check(sampled.E.size()==fieldGrid.voxelCount(),"field allocation follows field geometry");
             SpawnDensityRegionGrid3D selection;
-            check(selection.regionCount(spawnGrid)==64 && selection.selectionCount(spawnGrid)==65,
+            check(selection.regionCount(spawnGrid)==64 && selection.selectionCount(spawnGrid)==66,
                 "spawn-density selection count independent of field resolution");
             SpawnDensityRegion3D first,last;
             check(selection.region(spawnGrid,0,first) && selection.region(spawnGrid,63,last),"spawn region endpoints");
