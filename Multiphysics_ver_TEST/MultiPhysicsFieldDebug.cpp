@@ -222,8 +222,11 @@ void AtomicParticlesSimWorkspace::renderFieldDebug(WorkspaceServices& services) 
             m_scalarView == ScalarView::ElectronTemperature ? FieldSystem::ELECTRON_TEMPERATURE : FieldSystem::CHARGE_DENSITY;
         gpuRendered = m_fieldSystem->buildRenderBuffers(channel,settings);
         if (gpuRendered) {
-            if (m_vectorView == VectorView::Electric) FieldDebugRenderer::drawElectricField(*m_fieldSystem);
-            if (scalar) FieldDebugRenderer::drawScalarField(*m_fieldSystem);
+            services.renderer->setFieldSystem(m_fieldSystem.get());
+            if (m_vectorView == VectorView::Electric) services.renderer->displayElectricField();
+            if (scalar) services.renderer->displayScalarField();
+            // Borrow only for this draw, so resize and exit cannot leave a stale pointer.
+            services.renderer->setFieldSystem(nullptr);
         } else {
             m_fieldBackend = FieldBackend::CPU;
             m_debugNotice = "CUDA field drawing unavailable; CPU display active";

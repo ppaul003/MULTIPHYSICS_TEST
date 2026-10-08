@@ -9,7 +9,6 @@
 class EuclidRenderer;
 class ScalarField3D;
 class VectorField3D;
-class FieldSystem;
 struct DebugProjectile;
 
 enum class VectorGlyphScale {
@@ -70,9 +69,7 @@ struct ScalarFieldRenderSettings {
 
 class FieldDebugRenderer {
 public:
-    // FieldSystem owns CUDA/GL lifetime and builds the buffers before drawing.
-    static void drawElectricField(const FieldSystem& fields);
-    static void drawScalarField(const FieldSystem& fields, float pointSize = 5.0f);
+    // CPU/reference fields and diagnostic overlays only; GPU VBOs use EuclidRenderer.
     static void drawVector(const VectorField3D& field,
         const VectorFieldRenderSettings& settings = VectorFieldRenderSettings());
     // A mismatched color count safely falls back to the uniform color.

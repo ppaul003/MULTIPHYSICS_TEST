@@ -12,12 +12,25 @@ struct cudaGraphicsResource;
 // context teardown. CPU mirrors are explicit upload/download snapshots.
 class FieldSystem {
 public:
-    enum ScalarField { CHARGE_DENSITY, ELECTRIC_POTENTIAL, TEMPERATURE,
-        ELECTRON_DENSITY, ELECTRON_TEMPERATURE, _NUM_SCALAR_FIELDS };
-    enum VectorField { ELECTRIC_FIELD, MAGNETIC_FIELD, CURRENT_DENSITY, _NUM_VECTOR_FIELDS };
+    enum ScalarField { 
+        CHARGE_DENSITY, 
+        ELECTRIC_POTENTIAL, 
+        TEMPERATURE,
+        ELECTRON_DENSITY, 
+        ELECTRON_TEMPERATURE, 
+        _NUM_SCALAR_FIELDS 
+    };
+
+    enum VectorField { 
+        ELECTRIC_FIELD, 
+        MAGNETIC_FIELD, 
+        CURRENT_DENSITY, 
+        _NUM_VECTOR_FIELDS 
+    };
 
     FieldSystem(const FieldGridParams& grid, bool useOpenGL);
     ~FieldSystem();
+
     FieldSystem(const FieldSystem&) = delete;
     FieldSystem& operator=(const FieldSystem&) = delete;
 
@@ -63,7 +76,7 @@ public:
     unsigned getScalarBuffer() const { return m_scalarVbo; }
     unsigned getScalarVertexCount() const { return m_scalarVertexCount; }
 
-private:
+protected:
     void _initialize();
     void _finalize();
     bool allocateFieldBuffers();
@@ -73,8 +86,10 @@ private:
     bool result(bool success, const char* operation);
     void swapResources(FieldSystem& other);
 
+protected:
     bool m_bInitialized = false;
     bool m_bUseOpenGL = false;
+
     FieldGridParams m_grid{};
     FieldSolverParams m_solverParams{};
     AnalyticWaveParams m_waveParams{};

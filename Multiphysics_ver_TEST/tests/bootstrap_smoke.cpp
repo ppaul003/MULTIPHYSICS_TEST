@@ -27,6 +27,124 @@ public:
     float boundary() const { return m_params.boundary; }
 };
 
+// Verify real draw output and GL state restoration with deliberately conflicting
+// caller state. No simulation resources are owned by the renderer.
+static void fieldRendererSmoke() {
+    FieldGridParams grid{make_uint3(3,3,3), make_float3(-1.5f,-1.5f,-1.5f), make_float3(1,1,1), 27};
+    FieldSystem fields(grid, true);
+    require(fields.initialized(), "Field rendering test allocation");
+    fields.getScalarHost(FieldSystem::CHARGE_DENSITY)[13] = 1;
+    fields.getVectorHost(FieldSystem::ELECTRIC_FIELD)[13] = make_float4(1,0,0,0);
+    FieldRenderParams settings;
+    settings.vectorScale = 0;
+    settings.scalarReference = 1;
+    settings.vectorColor = make_float4(1,0.1f,0,0.6f);
+    require(fields.uploadFields() && fields.buildRenderBuffers(FieldSystem::CHARGE_DENSITY, settings),
+        "Field geometry built before drawing");
+    const GLuint lines = fields.getGlyphBuffer(), points = fields.getScalarBuffer();
+    {
+        EuclidRenderer renderer;
+        glPushAttrib(GL_ALL_ATTRIB_BITS);
+        glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT);
+        glViewport(0,0,128,128);
+        glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+        glOrtho(-1.5,1.5,-1.5,1.5,-2,2);
+        glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+
+        GLuint callerBuffer = 0;
+        glGenBuffers(1, &callerBuffer);
+        glBindBuffer(GL_ARRAY_BUFFER, callerBuffer);
+        glBufferData(GL_ARRAY_BUFFER, 65536, nullptr, GL_STATIC_DRAW);
+        glVertexPointer(3,GL_FLOAT,32,reinterpret_cast<void*>(16));
+        glColorPointer(4,GL_FLOAT,32,nullptr);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glDisableClientState(GL_COLOR_ARRAY);
+        glVertexAttribPointer(1,1,GL_FLOAT,GL_FALSE,32,nullptr);
+        glEnableVertexAttribArray(1);
+        glActiveTexture(GL_TEXTURE1); glClientActiveTexture(GL_TEXTURE1);
+        glEnable(GL_TEXTURE_2D);
+        glTexCoordPointer(2,GL_FLOAT,32,nullptr);
+        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+        glEnable(GL_LIGHTING);
+        glEnable(GL_POINT_SPRITE_ARB);
+        glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
+        glDepthMask(GL_TRUE); glDepthFunc(GL_GREATER); glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND); glBlendFunc(GL_ONE,GL_ZERO);
+        glBlendEquationSeparate(GL_FUNC_REVERSE_SUBTRACT,GL_FUNC_SUBTRACT);
+        glEnable(GL_ALPHA_TEST); glAlphaFunc(GL_LESS,0.1f);
+        glLineWidth(3); glPointSize(9);
+
+        const char* vertex = "#version 120\nvoid main(){gl_Position=ftransform();}";
+        const char* fragment = "#version 120\nvoid main(){gl_FragColor=vec4(0,1,0,1);}";
+        GLuint vs=glCreateShader(GL_VERTEX_SHADER), fs=glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(vs,1,&vertex,nullptr); glCompileShader(vs);
+        glShaderSource(fs,1,&fragment,nullptr); glCompileShader(fs);
+        GLuint program=glCreateProgram();
+        glAttachShader(program,vs); glAttachShader(program,fs); glLinkProgram(program);
+        GLint linked=0; glGetProgramiv(program,GL_LINK_STATUS,&linked);
+        require(linked!=0,"State-test shader links");
+        glUseProgram(program);
+        auto snapshot = [&]() {
+            std::vector<double> state;
+            for (GLenum p : {GL_CURRENT_PROGRAM, GL_ARRAY_BUFFER_BINDING, GL_ACTIVE_TEXTURE,
+                GL_CLIENT_ACTIVE_TEXTURE, GL_DEPTH_WRITEMASK, GL_DEPTH_FUNC, GL_DEPTH_TEST,
+                GL_BLEND, GL_BLEND_SRC_RGB, GL_BLEND_DST_RGB, GL_BLEND_SRC_ALPHA, GL_BLEND_DST_ALPHA,
+                GL_BLEND_EQUATION_RGB, GL_BLEND_EQUATION_ALPHA, GL_ALPHA_TEST, GL_ALPHA_TEST_FUNC,
+                GL_LIGHTING, GL_TEXTURE_2D, GL_POINT_SPRITE_ARB, GL_VERTEX_PROGRAM_POINT_SIZE,
+                GL_VERTEX_ARRAY, GL_COLOR_ARRAY, GL_TEXTURE_COORD_ARRAY, GL_VERTEX_ARRAY_SIZE,
+                GL_VERTEX_ARRAY_TYPE, GL_VERTEX_ARRAY_STRIDE, GL_VERTEX_ARRAY_BUFFER_BINDING,
+                GL_COLOR_ARRAY_SIZE, GL_COLOR_ARRAY_TYPE, GL_COLOR_ARRAY_STRIDE, GL_COLOR_ARRAY_BUFFER_BINDING}) {
+                GLint value=0; glGetIntegerv(p,&value); state.push_back(value);
+            }
+            for (GLenum p : {GL_LINE_WIDTH, GL_POINT_SIZE, GL_ALPHA_TEST_REF}) {
+                GLfloat value=0; glGetFloatv(p,&value); state.push_back(value);
+            }
+            for (GLenum p : {GL_VERTEX_ARRAY_POINTER, GL_COLOR_ARRAY_POINTER, GL_TEXTURE_COORD_ARRAY_POINTER}) {
+                void* value=nullptr; glGetPointerv(p,&value);
+                state.push_back(static_cast<double>(reinterpret_cast<uintptr_t>(value)));
+            }
+            GLint enabled=0; glGetVertexAttribiv(1,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&enabled);
+            state.push_back(enabled);
+            return state;
+        };
+        const auto original = snapshot();
+        renderer.displayElectricField(); renderer.displayScalarField(); // Detached no-op.
+        FieldSystem invalid(FieldGridParams{}, false);
+        renderer.setFieldSystem(&invalid);
+        renderer.displayElectricField(); renderer.displayScalarField();
+        require(snapshot()==original,"Null/uninitialized fields leave GL state unchanged");
+        renderer.setFieldSystem(&fields);
+        for (bool scalar : {false,true}) {
+            glClearColor(0,0,0,0); glClearDepth(1);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            if (scalar) renderer.displayScalarField(7);
+            else renderer.displayElectricField(1.25f);
+            require(snapshot()==original,"Field draw restores shader, blend/depth/size/texture/client-array state");
+            unsigned char pixels[3*3*4]{};
+            glReadBuffer(GL_BACK);
+            // A line at integer window Y can cover the adjacent pixel row.
+            glReadPixels(scalar?63:73,63,3,3,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+            const unsigned char* pixel = pixels;
+            for (int i=1; i<9; ++i) if (pixels[4*i]>pixel[0]) pixel=&pixels[4*i];
+            require(pixel[0]>80 && pixel[0]<245 && pixel[0]>pixel[1],
+                "Field primitive is visible and alpha-blended, without caller shader/texture interference");
+            float depth=0;
+            glReadPixels(64,64,1,1,GL_DEPTH_COMPONENT,GL_FLOAT,&depth);
+            require(depth==1.0f,"Transparent fields do not write depth");
+        }
+        require(glGetError()==GL_NO_ERROR,"Renderer state test has no OpenGL errors");
+        renderer.setFieldSystem(nullptr);
+        glUseProgram(0); glDeleteProgram(program); glDeleteShader(vs); glDeleteShader(fs);
+        glPopClientAttrib(); glBindBuffer(GL_ARRAY_BUFFER,0); glDeleteBuffers(1,&callerBuffer);
+        glPopAttrib();
+        glMatrixMode(GL_MODELVIEW); glPopMatrix();
+        glMatrixMode(GL_PROJECTION); glPopMatrix(); glMatrixMode(GL_MODELVIEW);
+    }
+    require(glIsBuffer(lines) && glIsBuffer(points),"Renderer destruction preserves FieldSystem VBO ownership");
+    require(fields.buildRenderBuffers(FieldSystem::CHARGE_DENSITY,settings),"Interop reusable after renderer destruction");
+    std::puts("PASS: Euclid field primitives, alpha/depth output, GL state restoration and borrowed VBO lifetime");
+}
+
 int main(int argc, char** argv) {
     try {
         if (argc > 1 && std::string(argv[1]) == "--engine-lifecycle") {
@@ -48,6 +166,7 @@ int main(int argc, char** argv) {
         require(glewInit() == GLEW_OK, "GLEW initialization");
         while (glGetError() != GL_NO_ERROR) {}
         std::printf("OpenGL: %s\n", glGetString(GL_VERSION));
+        fieldRendererSmoke();
         {
             CollisionTableProbe particles(16, make_uint3(64, 64, 64), true);
             particles.setActiveParticleCount(2);
@@ -385,8 +504,10 @@ int main(int argc, char** argv) {
                 selectRow("CONFIGURE WORKSPACE"); key('e');
                 require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION, "Configure Atomic");
                 selectRow("SELECT VOXEL SPAWN");
-                require(value(6) == "[" + std::to_string(renderer.getSimBoxSize()) + " MICRO METER]^3",
-                    "Whole-domain spawn remains default at every field resolution");
+                const std::string wholeDomain = "[" + std::to_string(renderer.getSimBoxSize()) + " MICRO METER]^3";
+                // Re-entry preserves the draft selection; explicitly select the start of the cycle.
+                for (int i = 0; i < 66 && value(6) != wholeDomain; ++i) key('d');
+                require(value(6) == wholeDomain, "Whole-domain spawn reachable at every field resolution");
                 key('d');
                 require(value(6) == "VOXEL_CENTER", "Centered spawn remains the next option");
                 key('d');

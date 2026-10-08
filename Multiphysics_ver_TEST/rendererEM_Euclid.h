@@ -95,6 +95,13 @@ public:
 		bool axes = true;
 	};
 
+	struct DiagnosticParticleVisual {
+		glm::vec3 position{ 0.0f };
+		float radius = 0.015f;
+		glm::vec4 color{ 1.0f };
+		float emissiveIntensity = 0.0f;
+	};
+
 public:
     EuclidRenderer();
     ~EuclidRenderer();
@@ -104,6 +111,7 @@ public:
         m_windowH = h;
         m_window_h = h;
     }
+
     void setFOV(float fov) { m_fov = fov; }
 
 	void setSimBoxSize(int x) { m_simBox = x; }
@@ -126,16 +134,7 @@ public:
 
 	void setGridMode3D();
 	void setGridMode2D(GridPlane plane, int sliceOffset);
-	void setRadius(float* r, int numParticles);
-	void setPointSize(float size) { m_pointSize = size; }
-	void setParticleRadius(float r) { m_particleRadius = r; }
 	
-	void setDisplayMode(DisplayMode mode) { m_displayMode = mode; }
-	void setParticleSystem(ParticleSystem* psystem) { m_psystem = psystem; }
-	void setPositions(float* pos, int numParticles);
-	void setVertexBuffer(unsigned int vbo, int numParticles);
-	void setColorBuffer(unsigned int vbo) { m_colorVBO = vbo; }
-	void setRadiusBuffer(unsigned int vbo) { m_radVBO = vbo; }
 
 	void setGrid(
 		const glm::ivec3& gridDim,
@@ -153,28 +152,7 @@ public:
 
 	void drawGridBoundary(const UniformGrid& grid);
 	void drawGridAxes(const UniformGrid& grid);
-	void drawAxisGizmo(const glm::vec3& origin, float length) {
-		if (length <= 0.0f) return;
-
-		glUseProgram(0);
-		glLineWidth(2.0f);
-		glBegin(GL_LINES);
-
-		glColor4f(1.0f, 0.0f, 0.0f, 1.0f);
-		glVertex3f(origin.x, origin.y, origin.z);
-		glVertex3f(origin.x + length, origin.y, origin.z);
-
-		glColor4f(0.0f, 1.0f, 0.0f, 1.0f);
-		glVertex3f(origin.x, origin.y, origin.z);
-		glVertex3f(origin.x, origin.y + length, origin.z);
-
-		glColor4f(0.0f, 0.0f, 1.0f, 1.0f);
-		glVertex3f(origin.x, origin.y, origin.z);
-		glVertex3f(origin.x, origin.y, origin.z + length);
-
-		glEnd();
-		glLineWidth(1.0f);
-	}
+	void drawAxisGizmo(const glm::vec3& origin, float length);
 
     void drawGridPlane(
         const UniformGrid& grid,
@@ -200,72 +178,51 @@ public:
 	void drawHighlightedVoxel(
 		const glm::vec3& center,
 		const glm::vec3& halfExtent,
-		float lineWidth = 3.0f) {
+		float lineWidth = 3.0f);
 
-		const glm::vec3 minimum = center - halfExtent;
-		const glm::vec3 maximum = center + halfExtent;
+    void displayDiagnosticParticles(
+		const std::vector<DiagnosticParticleVisual>& particles
+	);
 
-		glUseProgram(0);
-		glLineWidth(lineWidth > 0.0f ? lineWidth : 1.0f);
-		glColor4f(1.0f, 0.5f, 0.0f, 1.0f);
-		glBegin(GL_LINES);
-
-		glVertex3f(minimum.x, minimum.y, minimum.z);
-		glVertex3f(maximum.x, minimum.y, minimum.z);
-		glVertex3f(minimum.x, maximum.y, minimum.z);
-		glVertex3f(maximum.x, maximum.y, minimum.z);
-		glVertex3f(minimum.x, minimum.y, maximum.z);
-		glVertex3f(maximum.x, minimum.y, maximum.z);
-		glVertex3f(minimum.x, maximum.y, maximum.z);
-		glVertex3f(maximum.x, maximum.y, maximum.z);
-
-		glVertex3f(minimum.x, minimum.y, minimum.z);
-		glVertex3f(minimum.x, maximum.y, minimum.z);
-		glVertex3f(maximum.x, minimum.y, minimum.z);
-		glVertex3f(maximum.x, maximum.y, minimum.z);
-		glVertex3f(minimum.x, minimum.y, maximum.z);
-		glVertex3f(minimum.x, maximum.y, maximum.z);
-		glVertex3f(maximum.x, minimum.y, maximum.z);
-		glVertex3f(maximum.x, maximum.y, maximum.z);
-
-		glVertex3f(minimum.x, minimum.y, minimum.z);
-		glVertex3f(minimum.x, minimum.y, maximum.z);
-		glVertex3f(maximum.x, minimum.y, minimum.z);
-		glVertex3f(maximum.x, minimum.y, maximum.z);
-		glVertex3f(minimum.x, maximum.y, minimum.z);
-		glVertex3f(minimum.x, maximum.y, maximum.z);
-		glVertex3f(maximum.x, maximum.y, minimum.z);
-		glVertex3f(maximum.x, maximum.y, maximum.z);
-
-		glEnd();
-		glLineWidth(1.0f);
-	}
-
-    struct DiagnosticParticleVisual {
-        glm::vec3 position{0.0f};
-        float radius = 0.015f;
-        glm::vec4 color{1.0f};
-        float emissiveIntensity = 0.0f;
-    };
-    void displayDiagnosticParticles(const std::vector<DiagnosticParticleVisual>& particles);
+	// ============================================================
+	// PARTICLE SYSTEM
+	// ============================================================
+	void setParticleSystem(ParticleSystem* psystem) { m_psystem = psystem; }
+	void setDisplayMode(DisplayMode mode) { m_displayMode = mode; }
+	void setRadius(float* r, int numParticles);
+	void setPointSize(float size) { m_pointSize = size; }
+	void setParticleRadius(float r) { m_particleRadius = r; }
+	void setPositions(float* pos, int numParticles);
+	void setVertexBuffer(unsigned int vbo, int numParticles);
+	void setColorBuffer(unsigned int vbo) { m_colorVBO = vbo; }
+	void setRadiusBuffer(unsigned int vbo) { m_radVBO = vbo; }
 
 	void displayParticleRange(
-		int start, 
-		int count, 
+		int start,
+		int count,
 		bool emissive,
 		float emissiveIntensity = 1.0f
 	);
+	// ============================================================
+	// PARTICLE SYSTEM
+	// ============================================================
+
+	// ============================================================
+	// FIELD SYSTEM
+	// ============================================================
+	// Borrowed resources: caller detaches before destroying/replacing FieldSystem.
+	void setFieldSystem(FieldSystem* fieldSystem) { m_fsystem = fieldSystem; }
+	void displayVectorField(float lineWidth = 1.25f);
+	void displayElectricField(float lineWidth = 1.25f) { displayVectorField(lineWidth); }
+	void displayScalarField(float pointSize = 5.0f);
+	// ============================================================
+	// FIELD SYSTEM
+	// ============================================================
 
 private:
 	void _initGL();
 	void _initialize();
-	void _drawPoints(bool useColorBuffer = true);
 
-	void _drawPointsRange(
-		int start, 
-		int count, 
-		bool useColorBuffer = true
-	);
 
 	GLuint _compileProgram(
 		const char* vsource,
@@ -285,12 +242,26 @@ private:
 		float hoverY
 	);
 
-
     void drawGridPlaneLines(
         const UniformGrid& grid,
         GridPlane plane,
         float planePosition,
-        bool drawMinorLines);
+        bool drawMinorLines
+	);
+
+
+
+	bool checkShader(GLuint shader, const char* label);
+	// ============================================================
+	// PARTICLE SYSTEM
+	// ============================================================
+	void _drawPoints(bool useColorBuffer = true);
+
+	void _drawPointsRange(
+		int start,
+		int count,
+		bool useColorBuffer = true
+	);
 
 	void drawParticleSphere(
 		GLuint program,
@@ -299,9 +270,27 @@ private:
 		const float color[4],
 		bool emissiveBlend
 	);
+	// ============================================================
+	// PARTICLE SYSTEM
+	// ============================================================
 
-	bool checkShader(GLuint shader, const char* label);
-	
+	// ============================================================
+	// FIELD SYSTEM
+	// ============================================================
+	void _drawFieldVectorBuffer(
+		unsigned int vbo,
+		unsigned int vertexCount,
+		float lineWidth
+	);
+
+	void _drawFieldScalarBuffer(
+		unsigned int vbo,
+		unsigned int vertexCount,
+		float pointSize
+	);
+	// ============================================================
+	// FIELD SYSTEM
+	// ============================================================
 
 private:
 	static constexpr float kSimBoxSize = 32.0f;
@@ -379,6 +368,15 @@ private:
 	glm::mat4 m_root = glm::mat4(1.0f);
 
 	ParticleSystem* m_psystem = nullptr;
+
+	// ============================================================
+	// FIELD SYSTEM
+	// ============================================================
+
+	FieldSystem* m_fsystem = nullptr;
+	// ============================================================
+	// FIELD SYSTEM
+	// ============================================================
 };
 
 #endif

@@ -345,7 +345,7 @@ namespace {
         TheArbiter arbiter; KeyboardInput keyboard;
         arbiter.setApplicationLayer(TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE);
         arbiter.setActiveWorkspace(TheArbiter::WorkspaceId::ATOMIC_PARTICLES);
-        for(unsigned char key : {'f','F','v','b','c','g','1','2','3'})
+        for(unsigned char key : {'f','F','v','b','c','g','h','H','1','2','3'})
             check(arbiter.routeKeyboard(keyboard.onKey(key,0,0)).workspaceInput.action==WorkspaceInputAction::RawKey,"Atomic debug key routed");
         check(arbiter.routeKeyboard(keyboard.onKey(' ',0,0)).workspaceInput.action==WorkspaceInputAction::TogglePause,"space pause retained");
         check(arbiter.routeKeyboard(keyboard.onKey('q',0,0)).workspaceInput.action==WorkspaceInputAction::Back,"Q back retained");

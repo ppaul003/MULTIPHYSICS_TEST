@@ -206,7 +206,7 @@ bool FieldSystem::createGlyphBuffer() {
         return bytes == static_cast<GLint>(vertices * sizeof(FieldGlyphVertex)) &&
             registerFieldBuffer(vbo, &resource);
     };
-    const bool ok = create(m_glyphVbo, m_cudaGlyphResource, size_t(m_grid.cellCount) * 10) &&
+    const bool ok = create(m_glyphVbo, m_cudaGlyphResource, size_t(m_grid.cellCount) * kFieldGlyphVerticesPerCell) &&
         create(m_scalarVbo, m_cudaScalarResource, m_grid.cellCount) &&
         allocateFieldColors(&m_glyphColors,m_grid.cellCount);
     glBindBuffer(GL_ARRAY_BUFFER, previous);
@@ -267,7 +267,7 @@ bool FieldSystem::buildRenderBuffers(ScalarField scalar, const FieldRenderParams
     if (!buildFieldRenderBuffers(m_buffers.electricField,getScalarDevicePtr(scalar),
         m_grid,settings,m_cudaGlyphResource,m_cudaScalarResource,m_useGlyphColors?m_glyphColors:nullptr))
         return result(false,"Field glyph generation failed");
-    m_glyphVertexCount=m_grid.cellCount*10;
+    m_glyphVertexCount=m_grid.cellCount*kFieldGlyphVerticesPerCell;
     m_scalarVertexCount=m_grid.cellCount;
     return result(true,"");
 }

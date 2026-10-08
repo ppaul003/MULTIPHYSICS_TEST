@@ -47,7 +47,7 @@ TheArbiter::routeKeyboard(const KeyboardInput::KeyEvent& event) const {
         const bool multiphysicsDebugKey = m_navigation.layer ==
             ApplicationLayer::ACTIVE_WORKSPACE &&
             m_navigation.workspace == WorkspaceId::ATOMIC_PARTICLES &&
-            (key == 'f' || key == 'v' || key == 'b' || key == 'c' || key == 'g');
+            (key == 'f' || key == 'v' || key == 'b' || key == 'c' || key == 'g' || key == 'h');
 
         if ((event.rawKey >= '0' && event.rawKey <= '9') ||
 

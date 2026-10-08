@@ -261,9 +261,9 @@ void buildElectricGlyphsD(
 	if (i >= cFieldGrid.cellCount)
 		return;
 
-	const uint base = i * 10;
+	const uint base = i * kFieldGlyphVerticesPerCell;
 
-	for (uint v = 0; v < 10; v++) {
+	for (uint v = 0; v < kFieldGlyphVerticesPerCell; v++) {
 
 		vertices[base + v] =
 			fieldVertex(
@@ -326,15 +326,16 @@ void buildElectricGlyphsD(
 		: make_float3(1, 0, 0);
 
 	const float3 side = normalize(cross(direction, reference));
-	const float3 other = cross(direction, side);
 
 	const float3 neck = tip - direction * (length * 0.25f);
 	const float width = length * 0.12f;
 
-	const float4 color =
+	float4 color =
 		colors
 		? colors[i]
 		: settings.vectorColor;
+	// Visual opacity only. The arrowhead lies in one plane in world space.
+	color.w = fminf(0.8f, fmaxf(0.0f, color.w)) * (0.6f + 0.4f * static_cast<float>(fraction));
 
 	vertices[base] = fieldVertex(origin, color);
 	vertices[base + 1] = fieldVertex(tip, color);
@@ -342,10 +343,6 @@ void buildElectricGlyphsD(
 	vertices[base + 3] = fieldVertex(neck + side * width, color);
 	vertices[base + 4] = fieldVertex(tip, color);
 	vertices[base + 5] = fieldVertex(neck - side * width, color);
-	vertices[base + 6] = fieldVertex(tip, color);
-	vertices[base + 7] = fieldVertex(neck + other * width, color);
-	vertices[base + 8] = fieldVertex(tip, color);
-	vertices[base + 9] = fieldVertex(neck - other * width, color);
 }
 __global__
 void buildScalarPointsD(
@@ -374,10 +371,8 @@ void buildScalarPointsD(
 		magnitude < settings.scalarThreshold)
 		return;
 
-	const float brightness =
-		0.35f +
-		0.65f *
-		static_cast<float>(sqrt(fmin(1.0, magnitude / settings.scalarReference)));
+	const float relative = static_cast<float>(sqrt(fmin(1.0, magnitude / settings.scalarReference)));
+	const float brightness = 0.35f + 0.65f * relative;
 
 	const float3 color =
 		value > 0
@@ -386,7 +381,7 @@ void buildScalarPointsD(
 
 	vertices[i] = fieldVertex(
 		fieldCellCenter(i),
-		make_float4(color * brightness, 0.9f)
+		make_float4(color * brightness, 0.4f + 0.4f * relative)
 	);
 }
 ///-----------------------------------------------------------------------------------------

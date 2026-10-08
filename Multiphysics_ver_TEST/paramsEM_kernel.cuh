@@ -214,6 +214,9 @@ struct FieldGlyphVertex {
     float4 color;
 };
 
+// One shaft and a planar two-sided arrowhead, shared by allocation and CUDA generation.
+constexpr unsigned kFieldGlyphVerticesPerCell = 6;
+
 // Visual settings only. Fixed slots are transparent below threshold; SI arrays
 // are never scaled or clipped by these parameters. Stride applies per axis.
 struct FieldRenderParams {
@@ -225,7 +228,7 @@ struct FieldRenderParams {
     double scalarReference = 1.0e-18;
     double logStrength = 1000.0;
     float lengthInCells = 0.65f;
-    float4 vectorColor = make_float4(0.2f, 0.9f, 1.0f, 0.85f);
+    float4 vectorColor = make_float4(0.2f, 0.9f, 1.0f, 0.7f);
 };
 
 static_assert(std::is_trivial<ParticleSimParams>::value, "CUDA constant POD");

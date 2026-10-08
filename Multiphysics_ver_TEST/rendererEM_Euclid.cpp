@@ -9,12 +9,112 @@
 #include <cstdlib>
 #include <algorithm>
 #include <filesystem>
+#include <cmath>
 
 #include "rendererEM_Euclid.h"
 #include "render_utils.h"
 
 using namespace std;
 using namespace glm;
+
+namespace {
+    // Field drawing borrows VBOs and camera matrices; restore caller GL state.
+    class ScopedGpuFieldState {
+    public:
+        ScopedGpuFieldState() {
+            glGetIntegerv(GL_CURRENT_PROGRAM, &m_program);
+            glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &m_buffer);
+            glGetIntegerv(GL_ACTIVE_TEXTURE, &m_activeTexture);
+            glGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &m_clientTexture);
+            glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT | GL_COLOR_BUFFER_BIT |
+                GL_DEPTH_BUFFER_BIT | GL_LINE_BIT | GL_POINT_BIT | GL_TEXTURE_BIT);
+            glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT);
+            glUseProgram(0);
+            glDisable(GL_LIGHTING);
+            glDisable(GL_POINT_SPRITE_ARB);
+            glDisable(GL_VERTEX_PROGRAM_POINT_SIZE);
+            glDisable(GL_LINE_STIPPLE);
+            glDisable(GL_LINE_SMOOTH);
+            glDisable(GL_POINT_SMOOTH);
+            GLint units = 1;
+            glGetIntegerv(GL_MAX_TEXTURE_UNITS, &units);
+            for (GLint unit = 0; unit < units; ++unit) {
+                glActiveTexture(GL_TEXTURE0 + unit);
+                glClientActiveTexture(GL_TEXTURE0 + unit);
+                glDisable(GL_TEXTURE_1D);
+                glDisable(GL_TEXTURE_2D);
+                glDisable(GL_TEXTURE_3D);
+                glDisable(GL_TEXTURE_CUBE_MAP);
+                if (GLEW_ARB_texture_rectangle) glDisable(GL_TEXTURE_RECTANGLE_ARB);
+                glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+            }
+            glDisableClientState(GL_NORMAL_ARRAY);
+            glDisableClientState(GL_INDEX_ARRAY);
+            glDisableClientState(GL_EDGE_FLAG_ARRAY);
+            glDisableClientState(GL_SECONDARY_COLOR_ARRAY);
+            glDisableClientState(GL_FOG_COORD_ARRAY);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LEQUAL);
+            glDepthMask(GL_FALSE);
+            glEnable(GL_BLEND);
+            glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glEnable(GL_ALPHA_TEST);
+            glAlphaFunc(GL_GREATER, 0.0f);
+            GLfloat attenuation[] = {1.0f, 0.0f, 0.0f};
+            glPointParameterfv(GL_POINT_DISTANCE_ATTENUATION, attenuation);
+        }
+
+        ~ScopedGpuFieldState() {
+            glPopClientAttrib();
+            glPopAttrib();
+            glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(m_buffer));
+            glActiveTexture(m_activeTexture);
+            glClientActiveTexture(m_clientTexture);
+            glUseProgram(static_cast<GLuint>(m_program));
+        }
+
+    private:
+        GLint m_program = 0, m_buffer = 0;
+        GLint m_activeTexture = GL_TEXTURE0, m_clientTexture = GL_TEXTURE0;
+    };
+
+    void drawGpuFieldBuffer(GLuint vbo, unsigned count, GLenum primitive, float size) {
+        if (!vbo || !count || !std::isfinite(size) || size <= 0.0f) return;
+        ScopedGpuFieldState state;
+        GLfloat range[2];
+        glGetFloatv(primitive == GL_LINES ? GL_ALIASED_LINE_WIDTH_RANGE : GL_ALIASED_POINT_SIZE_RANGE, range);
+        size = std::clamp(size, range[0], range[1]);
+        if (primitive == GL_LINES) glLineWidth(size);
+        else glPointSize(size);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_COLOR_ARRAY);
+        glVertexPointer(4, GL_FLOAT, sizeof(FieldGlyphVertex),
+            reinterpret_cast<const void*>(offsetof(FieldGlyphVertex, position)));
+        glColorPointer(4, GL_FLOAT, sizeof(FieldGlyphVertex),
+            reinterpret_cast<const void*>(offsetof(FieldGlyphVertex, color)));
+        glDrawArrays(primitive, 0, static_cast<GLsizei>(count));
+    }
+}
+
+void EuclidRenderer::displayVectorField(float lineWidth) {
+    if (!m_fsystem || !m_fsystem->initialized()) return;
+    _drawFieldVectorBuffer(m_fsystem->getGlyphBuffer(), m_fsystem->getGlyphVertexCount(), lineWidth);
+}
+
+void EuclidRenderer::displayScalarField(float pointSize) {
+    if (!m_fsystem || !m_fsystem->initialized()) return;
+    _drawFieldScalarBuffer(m_fsystem->getScalarBuffer(), m_fsystem->getScalarVertexCount(), pointSize);
+}
+
+void EuclidRenderer::_drawFieldVectorBuffer(unsigned vbo, unsigned vertexCount, float lineWidth) {
+    drawGpuFieldBuffer(vbo, vertexCount, GL_LINES, lineWidth);
+}
+
+void EuclidRenderer::_drawFieldScalarBuffer(unsigned vbo, unsigned vertexCount, float pointSize) {
+    drawGpuFieldBuffer(vbo, vertexCount, GL_POINTS, pointSize);
+}
 
 static float wrapGuideAngleDeg(float angleDeg) {
     float wrapped = fmodf(angleDeg, 360.0f);
@@ -215,6 +315,29 @@ void EuclidRenderer::drawGridAxes(const UniformGrid& grid) {
 
     glColor4f(0.0f, 0.0f, 1.0f, 1.0f);
     glVertex3f(0.0f, 0.0f, 0.0f); glVertex3f(0.0f, 0.0f, axisLength);
+
+    glEnd();
+    glLineWidth(1.0f);
+}
+
+void EuclidRenderer::drawAxisGizmo(const vec3& origin, float length) {
+    if (length <= 0.0f) return;
+
+    glUseProgram(0);
+    glLineWidth(2.0f);
+    glBegin(GL_LINES);
+
+    glColor4f(1.0f, 0.0f, 0.0f, 1.0f);
+    glVertex3f(origin.x, origin.y, origin.z);
+    glVertex3f(origin.x + length, origin.y, origin.z);
+
+    glColor4f(0.0f, 1.0f, 0.0f, 1.0f);
+    glVertex3f(origin.x, origin.y, origin.z);
+    glVertex3f(origin.x, origin.y + length, origin.z);
+
+    glColor4f(0.0f, 0.0f, 1.0f, 1.0f);
+    glVertex3f(origin.x, origin.y, origin.z);
+    glVertex3f(origin.x, origin.y, origin.z + length);
 
     glEnd();
     glLineWidth(1.0f);
@@ -807,6 +930,49 @@ void EuclidRenderer::drawWireCube(
     glDisable(GL_BLEND);
 }
 
+void EuclidRenderer::drawHighlightedVoxel(
+    const vec3& center,
+    const vec3& halfExtent,
+    float lineWidth) {
+    const vec3 minimum = center - halfExtent;
+    const vec3 maximum = center + halfExtent;
+
+    glUseProgram(0);
+    glLineWidth(lineWidth > 0.0f ? lineWidth : 1.0f);
+    glColor4f(1.0f, 0.5f, 0.0f, 1.0f);
+    glBegin(GL_LINES);
+
+    glVertex3f(minimum.x, minimum.y, minimum.z);
+    glVertex3f(maximum.x, minimum.y, minimum.z);
+    glVertex3f(minimum.x, maximum.y, minimum.z);
+    glVertex3f(maximum.x, maximum.y, minimum.z);
+    glVertex3f(minimum.x, minimum.y, maximum.z);
+    glVertex3f(maximum.x, minimum.y, maximum.z);
+    glVertex3f(minimum.x, maximum.y, maximum.z);
+    glVertex3f(maximum.x, maximum.y, maximum.z);
+
+    glVertex3f(minimum.x, minimum.y, minimum.z);
+    glVertex3f(minimum.x, maximum.y, minimum.z);
+    glVertex3f(maximum.x, minimum.y, minimum.z);
+    glVertex3f(maximum.x, maximum.y, minimum.z);
+    glVertex3f(minimum.x, minimum.y, maximum.z);
+    glVertex3f(minimum.x, maximum.y, maximum.z);
+    glVertex3f(maximum.x, minimum.y, maximum.z);
+    glVertex3f(maximum.x, maximum.y, maximum.z);
+
+    glVertex3f(minimum.x, minimum.y, minimum.z);
+    glVertex3f(minimum.x, minimum.y, maximum.z);
+    glVertex3f(maximum.x, minimum.y, minimum.z);
+    glVertex3f(maximum.x, minimum.y, maximum.z);
+    glVertex3f(minimum.x, maximum.y, minimum.z);
+    glVertex3f(minimum.x, maximum.y, maximum.z);
+    glVertex3f(maximum.x, maximum.y, minimum.z);
+    glVertex3f(maximum.x, maximum.y, maximum.z);
+
+    glEnd();
+    glLineWidth(1.0f);
+}
+
 void EuclidRenderer::drawUniformGridZRange(
     const UniformGrid& grid,
     float visibleMinZ,
@@ -1096,7 +1262,6 @@ void EuclidRenderer::_drawPoints(bool useColorBuffer) {
         useColorBuffer
     );
 }
-
 
 void EuclidRenderer::_drawPointsRange(
     int start, 

@@ -214,7 +214,7 @@ extern "C" {
 }
 // <FIELD SYSTEM HOST LAUNCHERS>
 bool validFieldGrid(const FieldGridParams& g) {
-    const unsigned limit = 2147483647u / (10u * sizeof(FieldGlyphVertex)); // legacy GL buffer-size query
+    const unsigned limit = 2147483647u / (kFieldGlyphVerticesPerCell * sizeof(FieldGlyphVertex)); // legacy GL buffer-size query
     if (!g.dimensions.x || !g.dimensions.y || !g.dimensions.z ||
         g.dimensions.x > limit || g.dimensions.y > limit || g.dimensions.z > limit) return false;
     const uint64_t xy = uint64_t(g.dimensions.x) * g.dimensions.y;
@@ -382,7 +382,7 @@ bool buildFieldRenderBuffers(const float4* electric, const float* scalar,
     size_t lineBytes=0, pointBytes=0;
     bool ok=cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&lines),&lineBytes,vectorResource)==cudaSuccess &&
         cudaGraphicsResourceGetMappedPointer(reinterpret_cast<void**>(&points),&pointBytes,scalarResource)==cudaSuccess &&
-        lineBytes>=size_t(grid.cellCount)*10*sizeof(FieldGlyphVertex) &&
+        lineBytes>=size_t(grid.cellCount)*kFieldGlyphVerticesPerCell*sizeof(FieldGlyphVertex) &&
         pointBytes>=size_t(grid.cellCount)*sizeof(FieldGlyphVertex);
     if (ok) {
         buildElectricGlyphsD<<<(grid.cellCount+255)/256,256>>>(electric,lines,s,vectorColors);

@@ -194,6 +194,12 @@ namespace {
         settings.scalarThreshold=0; settings.vectorThreshold=0;
         check(fields.buildRenderBuffers(FieldSystem::CHARGE_DENSITY,settings), "Visible GPU render build");
         const auto visible=readVbo(lines,fields.getGlyphVertexCount());
+        check(visible.size()==fields.getCellCount()*6, "Three GL_LINES segments per field cell");
+        check(visible[2].position.z==visible[1].position.z && visible[4].position.z==visible[1].position.z &&
+            visible[3].position.z<visible[1].position.z && visible[5].position.z<visible[1].position.z &&
+            visible[3].position.x<visible[1].position.x && visible[5].position.x>visible[1].position.x,
+            "Planar two-sided arrowhead connects to shaft tip");
+        check(visible[0].color.w>0.4f && visible[0].color.w<=0.8f, "Translucent vector alpha");
         check(visible[1].position.z>visible[0].position.z && visible[0].color.w>0,
             "Tiny vector survives magnitude calculation and arrow points +z");
         const float length=visible[1].position.z-visible[0].position.z;
@@ -202,6 +208,7 @@ namespace {
         const auto scalars=readVbo(points,fields.getScalarVertexCount());
         check(scalars[0].color.x>scalars[0].color.z && scalars[1].color.z>scalars[1].color.x,
             "Charge density warm positive / cool negative");
+        check(scalars[0].color.w>=0.4f && scalars[0].color.w<=0.8f, "Magnitude controls scalar alpha");
         settings.stride=2;
         check(fields.buildRenderBuffers(FieldSystem::CHARGE_DENSITY,settings), "Per-axis stride");
         const auto strided=readVbo(points,fields.getScalarVertexCount());
@@ -217,7 +224,7 @@ namespace {
             check(rho[i]==(i%2?-1e-19f:1e-19f) && electric[i].z==1e-26f, "Threshold/stride do not change physics");
         check(fields.setFieldGrid(grid(9)), "GL resource resize");
         check(fields.buildRenderBuffers(FieldSystem::CHARGE_DENSITY,settings) &&
-            fields.getGlyphVertexCount()==7290 && fields.getScalarVertexCount()==729, "New grid render storage size");
+            fields.getGlyphVertexCount()==729*6 && fields.getScalarVertexCount()==729, "New grid render storage size");
         check(glGetError()==GL_NO_ERROR && cudaDeviceSynchronize()==cudaSuccess, "GL/CUDA render buffer execution");
     }
 }
