@@ -1,5 +1,6 @@
 #include "particleSystem.h"
 #include "kernel.h"
+#include "fieldSystem.h"
 
 #include <cuda_runtime.h>
 
@@ -199,6 +200,7 @@ void ParticleSystem::_initialize(uint numParticles) {
 	
 	m_numParticles = static_cast<uint>(numParticles);
 	
+    if (numParticles > 49152) throw std::invalid_argument("Particle capacity exceeds 49152");
 	// ALLOCATE GPU DATA
 	unsigned int cSize = sizeof(uint) * m_numGridCells;
 	unsigned int uSize = sizeof(uint) * m_numParticles;
@@ -234,6 +236,11 @@ void ParticleSystem::_initialize(uint numParticles) {
 	
 	allocateArray((void**)&m_dVel, memSize);
 	allocateArray((void**)&m_dAcc, memSize);
+    checkCudaErrors(cudaMalloc(reinterpret_cast<void**>(&m_dMarkers),sizeof(ParticleFieldMarker)*numParticles));
+    std::vector<ParticleFieldMarker> neutral(numParticles);
+    for (auto& marker : neutral) marker.kind = ParticleKind::Atomic;
+    checkCudaErrors(cudaMemcpy(m_dMarkers,neutral.data(),neutral.size()*sizeof(ParticleFieldMarker),cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemset(m_dAcc,0,memSize));
 	allocateArray((void**)&m_dSortedPos, memSize);
 	allocateArray((void**)&m_dSortedVel, memSize);
 	allocateArray((void**)&m_dGridParticleHash, uSize);
@@ -281,6 +288,7 @@ void ParticleSystem::_finalize() {
 
 	freeArray(m_dVel);
 	freeArray(m_dAcc);
+    freeArray(m_dMarkers);
 	freeArray(m_dSortedPos);
 	freeArray(m_dSortedVel);
 	freeArray(m_dGridParticleHash);
@@ -370,65 +378,66 @@ bool ParticleSystem::setActiveParticleCount(uint count) {
 	return true;
 }
 
-void ParticleSystem::update(float deltaTime) {
-	assert(m_bInitialized);
-
-	if (m_activeParticleCount == 0) return;
-
-	float* dPos = (float*)mapGLBufferObject(&m_cuda_posvbo_resource);
-
-	setParameters(&m_params);
-	integrateSystem(
-		dPos,
-		m_dVel,
-		m_dAcc,
-		deltaTime,
-		m_activeParticleCount
-	);
-
-	if (m_nbody)
-		forcesKernel(dPos, m_dAcc, m_activeParticleCount);
-
-	if (m_collisions) {
-		calcHash(
-			m_dGridParticleHash,
-			m_dGridParticleIndex,
-			dPos,
-			m_activeParticleCount
-		);
-
-		sortParticles(
-			m_dGridParticleHash,
-			m_dGridParticleIndex,
-			m_activeParticleCount
-		);
-
-		reorderDataAndFindCellStart(
-			m_dCellStart,
-			m_dCellEnd,
-			m_dSortedPos,
-			m_dSortedVel,
-			m_dGridParticleHash,
-			m_dGridParticleIndex,
-			dPos,
-			m_dVel,
-			m_activeParticleCount,
-			m_numGridCells
-		);
-
-		collide(
-			m_dVel,
-			m_dSortedPos,
-			m_dSortedVel,
-			m_dGridParticleIndex,
-			m_dCellStart,
-			m_dCellEnd,
-			m_activeParticleCount,
-			m_numGridCells
-		);
-	}
-
-	unmapGLBufferObject(m_cuda_posvbo_resource);
+bool ParticleSystem::setMetersPerWorldUnit(double scale) {
+    if(!std::isfinite(scale)||scale<=0) return false;
+    m_params.metersPerWorldUnit=scale;
+    return true;
+}
+bool ParticleSystem::setFieldMarkers(const ParticleFieldMarker* markers,unsigned count) {
+    if(count!=m_activeParticleCount || (count && !markers)) return false;
+    for(unsigned i=0;i<count;++i) {
+        const auto& m=markers[i];
+        if(!std::isfinite(m.chargeC)||!std::isfinite(m.chargeToMass)||
+           (m.chargeC==0)!=(m.chargeToMass==0)||double(m.chargeC)*m.chargeToMass<0) return false;
+    }
+    return !count || cudaMemcpy(m_dMarkers,markers,count*sizeof(*markers),cudaMemcpyHostToDevice)==cudaSuccess;
+}
+void ParticleSystem::update(float dt) {
+    if(!updateInternal(dt,nullptr,ElectrostaticMode::Off,0))
+        throw std::runtime_error("Particle acceleration/integration failed");
+}
+bool ParticleSystem::updateMultiphysics(float dt,FieldSystem& fields,ElectrostaticMode mode,double timeSeconds) {
+    return updateInternal(dt,&fields,mode,timeSeconds);
+}
+bool ParticleSystem::updateInternal(float dt,FieldSystem* fields,ElectrostaticMode mode,double timeSeconds) {
+    if(!m_bInitialized||!std::isfinite(dt)||dt<0) return false;
+    if(dt==0) return true;
+    const float minCell=(std::min)(m_params.cellSize.x,(std::min)(m_params.cellSize.y,m_params.cellSize.z));
+    if(m_collisions && 2*m_params.particleRadius>minCell) return false;
+    if(fields && (!fields->initialized()||fields->getGrid().metersPerWorldUnit!=m_params.metersPerWorldUnit)) return false;
+    if(mode==ElectrostaticMode::DirectCoulombDebug && m_activeParticleCount>2048) return false;
+    if(!m_activeParticleCount) return !fields || fields->updateParticleFields(nullptr,nullptr,nullptr,0,mode,timeSeconds);
+    float* dPos=static_cast<float*>(mapGLBufferObject(&m_cuda_posvbo_resource));
+    if(!dPos) return false;
+    bool ok=false;
+    try {
+        setParameters(&m_params);
+        ok=initializeParticleAcceleration(reinterpret_cast<float4*>(m_dAcc),m_dMarkers,m_activeParticleCount);
+        if(ok && m_collisions) {
+            calcHash(m_dGridParticleHash,m_dGridParticleIndex,dPos,m_activeParticleCount);
+            sortParticles(m_dGridParticleHash,m_dGridParticleIndex,m_activeParticleCount);
+            reorderDataAndFindCellStart(m_dCellStart,m_dCellEnd,m_dSortedPos,m_dSortedVel,
+                m_dGridParticleHash,m_dGridParticleIndex,dPos,m_dVel,m_activeParticleCount,m_numGridCells);
+            ok=computeContactAcceleration(reinterpret_cast<float4*>(m_dAcc),reinterpret_cast<float4*>(m_dSortedPos),
+                reinterpret_cast<float4*>(m_dSortedVel),m_dGridParticleIndex,m_dCellStart,m_dCellEnd,m_dMarkers,m_activeParticleCount);
+        }
+        if(ok && m_nbody) forcesKernel(dPos,m_dAcc,m_activeParticleCount); // Explicit legacy demo, disabled by default.
+        if(ok && fields) {
+            ok=fields->updateParticleFields(reinterpret_cast<float4*>(dPos),reinterpret_cast<float4*>(m_dVel),
+                m_dMarkers,m_activeParticleCount,mode,timeSeconds);
+            if(ok && mode==ElectrostaticMode::DirectCoulombDebug)
+                ok=computeDirectCoulomb(reinterpret_cast<float4*>(dPos),m_dMarkers,reinterpret_cast<float4*>(m_dAcc),
+                    m_activeParticleCount,mode,fields->getSolverParams().coulombSofteningM);
+            if(ok) ok=fields->computeLorentzAcceleration(reinterpret_cast<float4*>(dPos),reinterpret_cast<float4*>(m_dVel),
+                m_dMarkers,reinterpret_cast<float4*>(m_dAcc),m_activeParticleCount);
+        }
+        if(ok) {
+            integrateSystem(dPos,m_dVel,m_dAcc,dt,m_activeParticleCount,m_dMarkers);
+            ok=cudaGetLastError()==cudaSuccess;
+        }
+    } catch(...) { unmapGLBufferObject(m_cuda_posvbo_resource); throw; }
+    unmapGLBufferObject(m_cuda_posvbo_resource);
+    return ok && cudaGetLastError()==cudaSuccess;
 }
 
 void ParticleSystem::dumpGrid() {

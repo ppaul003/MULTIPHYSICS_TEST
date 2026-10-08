@@ -1,3 +1,5 @@
+#include "AtomicInitialConditions.h"
+#include "TextEntry.h"
 #include "VoxelField3D.h"
 #include "DebugElectrodynamics.h"
 #include "FieldDebugRenderer.h"
@@ -20,6 +22,86 @@ namespace {
     bool nearVec(const glm::vec3& a, const glm::vec3& b, double absolute = 1e-5) {
         return vectorMagnitude(a-b) <= absolute;
     }
+
+    void initialConditions() {
+        using namespace AtomicInitialization;
+        double density = 0;
+        check(numberDensity(1,14,density) && density==1e14,"scientific notation");
+        check(numberDensity(1.5,14,density) && density==1.5e14,"decimal notation");
+        check(numberDensity(2,-3,density) && closeValue(density,.002,1e-16),"negative exponent");
+        check(!numberDensity(-1,0,density) && !numberDensity(1,309,density),"density bounds");
+        check(!numberDensity(std::numeric_limits<double>::infinity(),0,density),"infinite mantissa");
+        check(!numberDensity(std::numeric_limits<double>::quiet_NaN(),0,density),"NaN mantissa");
+        check(!numberDensity(10,308,density),"density overflow");
+        check(closeValue(physicalVolumeM3(32),3.2768e-14,1e-28),"32 micrometer cube");
+        Population p; std::string error;
+        check(resolve(DensityType::Electron,1,14,.1,32,p,error),"reference population valid");
+        check(closeValue(p.expectedHeavyCount,32.768,1e-12) && closeValue(p.expectedNeutralCount,29.4912,1e-12) &&
+            closeValue(p.expectedIonCount,3.2768,1e-12) && p.expectedIonCount==p.expectedElectronCount,"reference expected populations");
+        const auto reference=p;
+        check(resolve(DensityType::Ion,1,14,.1,32,p,error) && p.heavyCount==reference.heavyCount && p.ionCount==reference.ionCount,"ion/electron density equivalence");
+        check(resolve(DensityType::Neutral,9,14,.1,32,p,error) && closeValue(p.expectedHeavyCount,32.768,1e-12),"neutral density derivation");
+        for (int box : {4,8,16,32}) for (int percent=0;percent<=100;++percent) {
+            const double alpha=percent/100.0;
+            const auto type=percent==0 ? DensityType::Neutral : DensityType::Electron;
+            check(resolve(type,1,14,alpha,box,p,error),"preset/fraction resolves");
+            check(p.neutralCount+p.ionCount==p.heavyCount && p.electronCount==p.ionCount,"population identities");
+            Population again;
+            check(resolve(type,1,14,alpha,box,again,error) && again.heavyCount==p.heavyCount && again.ionCount==p.ionCount,"preview deterministic");
+        }
+        check(resolve(DensityType::Electron,21000/physicalVolumeM3(32),0,1,32,p,error) && p.heavyCount==21000 &&
+            p.ionCount==21000 && p.electronCount==21000 && p.neutralCount==0 && p.activeMarkerCount==42000 &&
+            kParticleCapacity-p.activeMarkerCount==7152,"fully ionized reserve");
+        check(!resolve(DensityType::Neutral,22000/physicalVolumeM3(32),0,0,32,p,error) && error.find("HEAVY")!=std::string::npos,"heavy limit rejects");
+        check(!resolve(DensityType::Ion,30000/physicalVolumeM3(32),0,1,32,p,error) && error.find("CAPACITY")!=std::string::npos,"marker limit rejects");
+        for(auto type:{DensityType::Electron,DensityType::Ion})
+            check(!resolve(type,1,14,0,32,p,error),"nonzero charge alpha zero rejected");
+        check(!resolve(DensityType::Neutral,1,14,1,32,p,error),"nonzero neutral alpha one rejected");
+        check(resolve(DensityType::Neutral,0,0,1,32,p,error)&&p.heavyCount==0,"zero neutral endpoint empty");
+        check(resolve(DensityType::Electron,0,0,0,32,p,error)&&p.heavyCount==0,"zero charged endpoint empty");
+        check(!resolve(DensityType::Electron,1,308,1e-10,32,p,error),"derived overflow rejects before integer conversion");
+        std::mt19937 rng(kPopulationRoundingSeed), same(kPopulationRoundingSeed);
+        double sum=0;
+        for (int i=0;i<20000;++i) {
+            double x=stochasticRound(32.768,rng);
+            check(x==stochasticRound(32.768,same) && (x==32 || x==33),"fixed seed round reproducible");
+            sum+=x;
+        }
+        check(std::abs(sum/20000-32.768)<.015,"stochastic mean matches expectation");
+    }
+    void numericTextEntry() {
+        TextEntrySession entry;
+        auto type=[&](const std::string& text) {for(unsigned char c:text) check(entry.handleRawKey(c)==TextEntryAction::Changed,"numeric character accepted");};
+        double real=0; int integer=0; unsigned count=0;
+        check(entry.beginNonnegativeReal("mantissa",0),"real editor starts");
+        type("1.0");
+        check(entry.getBuffer()=="1.0","real text preserved during editing");
+        check(entry.handleRawKey(13)==TextEntryAction::Committed && entry.tryGetCommittedReal(real) && real==1 && entry.getNormalizedText()=="1","real normalized on commit");
+        check(entry.beginNonnegativeReal("mantissa",1),"real reopen"); type("1.5");
+        check(entry.handleRawKey('.')==TextEntryAction::Rejected && entry.handleRawKey('-')==TextEntryAction::Rejected,"invalid mantissa characters");
+        check(entry.handleRawKey(13)==TextEntryAction::Committed && entry.tryGetCommittedReal(real) && real==1.5,"decimal commit");
+        entry.beginNonnegativeReal("mantissa",1); type("3.2768"); entry.handleRawKey(8);
+        check(entry.getBuffer()=="3.276","backspace");
+        check(entry.handleRawKey(27)==TextEntryAction::Cancelled && !entry.tryGetCommittedReal(real),"cancel clears result");
+        entry.beginNonnegativeReal("mantissa",0); type(std::string(310,'9'));
+        check(entry.handleRawKey(13)==TextEntryAction::Rejected && entry.isActive(),"real overflow rejected on commit");
+        check(!entry.beginNonnegativeReal("mantissa",std::numeric_limits<double>::infinity()),"nonfinite default rejected");
+        for(const auto* text:{"14","-3","0"}) {
+            entry.beginSignedInteger("exponent",-308,308,0); type(text);
+            check(entry.handleRawKey(13)==TextEntryAction::Committed && entry.tryGetCommittedSigned(integer) && integer==std::stoi(text),"signed exponent commit");
+        }
+        entry.beginSignedInteger("exponent",-308,308,0); type("309");
+        check(entry.handleRawKey(13)==TextEntryAction::Rejected,"exponent bounds");
+        entry.beginSignedInteger("exponent",-308,308,0); type("-");
+        check(entry.handleRawKey(13)==TextEntryAction::Rejected,"incomplete sign rejected");
+        entry.beginUnsignedInteger("count",0,100); type("12");
+        check(entry.handleRawKey(13)==TextEntryAction::Committed && entry.tryGetCommittedUnsigned(count) && count==12,"unsigned mode retained");
+        entry.beginAssetName("asset","",32); type(" My Asset ");
+        check(entry.handleRawKey(13)==TextEntryAction::Committed && entry.getNormalizedText()=="My_Asset","asset mode retained");
+        entry.beginGeneralText("text","",32); type("a.b-12");
+        check(entry.handleRawKey(13)==TextEntryAction::Committed && entry.getCommittedText()=="a.b-12","general mode retained");
+    }
+
     void fieldsAndCurl() {
         SpatialVoxelGrid3D grid;
         ScalarField3D scalar(grid);
@@ -354,9 +436,31 @@ namespace {
         check(!arbiter.routeKeyboard(keyboard.onKey('f',0,0)).hasWorkspaceInput,"other cartridge unchanged");
     }
 }
+
+void micrometerCpuUnits() {
+    SpatialVoxelGrid3D g;
+    g.dimensions=glm::ivec3(8);g.origin=glm::vec3(-16);g.voxelEdgeM=4;g.metersPerWorldUnit=1e-6;
+    SpatialVoxelRegion cell;check(g.region(0,cell),"Metric CPU voxel");
+    check(std::abs(double(cell.volumeM3)-64e-18)<1e-23,"CPU voxel volume is SI");
+    SpawnDensityRegionGrid3D regions;SpawnDensityRegion3D whole;
+    check(regions.wholeDomainRegion(g,whole)&&std::abs(double(whole.volumeM3)-3.2768e-14)<1e-20,"CPU whole-domain SI volume");
+    VectorField3D field(g),result(g);
+    for(unsigned i=0;i<g.voxelCount();++i) {g.region(i,cell);field.set(i,glm::vec3(-cell.center.y*1e-6f,cell.center.x*1e-6f,0));}
+    computeCurl(field,result);
+    for(unsigned i=0;i<g.voxelCount();++i) check(std::abs(result.get(i).z-2)<1e-5,"CPU curl uses meter spacing");
+    DebugElectrodynamics beam;beam.setSpeedMps(1);
+    check(beam.fire(DebugProjectileSpecies::ArgonIon,glm::vec3(0),glm::vec3(0,0,1),g)==DebugElectrodynamics::FireResult::Fired,"Metric CPU beam");
+    const float before=beam.projectiles()[0].position.z;beam.update(1e-6,g);
+    check(std::abs((beam.projectiles()[0].position.z-before)-1)<1e-6,"SI beam drift converts back to world geometry");
+    VectorField3D electric(g),magnetic(g),current(g);ScalarField3D rho(g);
+    beam.populateFields(g,electric,magnetic,current,rho);
+    double q=0;for(unsigned i=0;i<g.voxelCount();++i) q+=rho.get(i)*double(cell.volumeM3);
+    check(std::abs(q-1.602176634e-19)<1e-25,"CPU diagnostic deposition uses SI volume");
+}
 int main() {
     try {
-        fieldsAndCurl(); independentFieldGrid(); diagnosticSampling(); glyphScaling();
+        micrometerCpuUnits();
+        numericTextEntry(); initialConditions(); fieldsAndCurl(); independentFieldGrid(); diagnosticSampling(); glyphScaling();
         projectilesAndSigns(); raysAndCapacity(); cameraAndRouting();
         std::cout << "PASS: " << checks << " field, curl, electrodynamics, ray, capacity, camera and input checks\n";
         return 0;

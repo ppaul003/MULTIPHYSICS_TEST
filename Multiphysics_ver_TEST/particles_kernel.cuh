@@ -214,7 +214,7 @@ void collideD(
 	}
 
 	uint originalIndex = gridParticleIndex[index];
-	newVel[originalIndex] = make_float4(v_new + force, vel.w);
+	addAcceleration(newVel, originalIndex, scaled3(force, cParticleParams.metersPerWorldUnit));
 }
 __global__
 void calculate_forces(
@@ -225,10 +225,8 @@ void calculate_forces(
 	extern __shared__ float4 shPosition[];
 	const uint body_id = blockIdx.x * blockDim.x + threadIdx.x;
 
-	if (body_id >= numParticles)
-		return;
-
-	float4 myPosition = d_b[body_id];
+	const bool active = body_id < numParticles;
+	float4 myPosition = active ? d_b[body_id] : make_float4(0);
 	float3 acc = make_float3(0.0f, 0.0f, 0.0f);
 
 	for (uint tile = 0; tile < gridDim.x; tile++) {
@@ -241,7 +239,7 @@ void calculate_forces(
 			shPosition[threadIdx.x] = make_float4(0, 0, 0, 0);
 
 		__syncthreads();
-		acc = tile_calculation(
+		if (active) acc = tile_calculation(
 			myPosition,
 			acc,
 			tile,
@@ -250,7 +248,7 @@ void calculate_forces(
 		__syncthreads();
 	}
 
-	d_a[body_id] = make_float4(acc.x, acc.y, acc.z, 0.0f);
+	if (active) addAcceleration(d_a, body_id, scaled3(acc, cParticleParams.metersPerWorldUnit));
 }
 ///-----------------------------------------------------------------------------------------
 /// </PARTICLE SYSTEM KERNEL>
@@ -388,4 +386,58 @@ float3 collideCell(
 /// </PARTICLE SYSTEM DEVICE FUNCS>
 ///-----------------------------------------------------------------------------------------
 
+
+// Mass-normalized contact coefficients: spring/attraction [s^-2], damping/shear [s^-1].
+__global__ void contactAccelerationD(float4* acceleration,const float4* pos,const float4* vel,
+    const unsigned* indices,const unsigned* start,const unsigned* end,
+    const ParticleFieldMarker* markers,unsigned count) {
+    const unsigned i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i>=count) return;
+    const unsigned original=indices[i];
+    if(markers[original].kind==ParticleKind::Inactive) return;
+    const float4 pi=pos[i],vi=vel[i];
+    const int3 cell=calcGridPos(make_float3(pi));
+    const uint3 dims=cParticleParams.gridSize;
+    float3 sum=make_float3(0);
+    for(int z=-1;z<=1;++z) for(int y=-1;y<=1;++y) for(int x=-1;x<=1;++x) {
+        const int3 c=make_int3(cell.x+x,cell.y+y,cell.z+z);
+        if(c.x<0||c.y<0||c.z<0||c.x>=int(dims.x)||c.y>=int(dims.y)||c.z>=int(dims.z)) continue;
+        const unsigned hash=calcGridHash(c), first=start[hash];
+        if(first==0xffffffffu) continue;
+        for(unsigned j=first;j<end[hash];++j) {
+            if(j==i||markers[indices[j]].kind==ParticleKind::Inactive) continue;
+            const float4 pj=pos[j],vj=vel[j];
+            const float3 r=make_float3(pj)-make_float3(pi);
+            const double d2=double(r.x)*r.x+double(r.y)*r.y+double(r.z)*r.z;
+            const double radius=double(vi.w)+vj.w;
+            if(d2>=radius*radius) continue;
+            const double d=sqrt(d2);
+            const float3 normal=d>0 ? scaled3(r,1.0/d) : make_float3(original<indices[j]?1.0f:-1.0f,0,0);
+            const float3 relative=make_float3(vj)-make_float3(vi);
+            const float3 tangent=relative-normal*dot(relative,normal);
+            const float3 worldAcceleration=scaled3(normal,-double(cParticleParams.spring)*(radius-d))+
+                relative*cParticleParams.damping+tangent*cParticleParams.shear+r*cParticleParams.attraction;
+            sum+=scaled3(worldAcceleration,cParticleParams.metersPerWorldUnit);
+        }
+    }
+    addAcceleration(acceleration,original,sum);
+}
+// Diagnostic only: launcher enforces small N and excludes GridField mode.
+__global__ void directCoulombD(const float4* pos,const ParticleFieldMarker* markers,
+    float4* acceleration,unsigned count,double softeningM) {
+    const unsigned i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i>=count||markers[i].kind==ParticleKind::Inactive||markers[i].chargeC==0) return;
+    const double scale=cParticleParams.metersPerWorldUnit;
+    double ax=0,ay=0,az=0;
+    for(unsigned j=0;j<count;++j) {
+        if(i==j||markers[j].kind==ParticleKind::Inactive||markers[j].chargeC==0) continue;
+        const double x=(double(pos[i].x)-pos[j].x)*scale;
+        const double y=(double(pos[i].y)-pos[j].y)*scale;
+        const double z=(double(pos[i].z)-pos[j].z)*scale;
+        const double r2=x*x+y*y+z*z+softeningM*softeningM;
+        const double f=kCoulombSI*double(markers[i].chargeToMass)*markers[j].chargeC/(r2*sqrt(r2));
+        ax+=f*x; ay+=f*y; az+=f*z;
+    }
+    addAcceleration(acceleration,i,make_float3(float(ax),float(ay),float(az)));
+}
 #endif

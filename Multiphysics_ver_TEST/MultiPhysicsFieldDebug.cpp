@@ -1,5 +1,6 @@
 #include "atomicParticlesSimWorkspace.h"
 #include "CameraEM.h"
+#include "kernel.h"
 #include "rendererEM_Euclid.h"
 
 #include <algorithm>
@@ -14,9 +15,9 @@ namespace {
     const glm::vec4 kDipoleElectricColor(0.72f, 0.25f, 1.0f, 0.9f);
     const glm::vec4 kPositiveMagneticColor(0.1f, 1.0f, 0.15f, 0.9f);
     const glm::vec4 kNegativeMagneticColor(1.0f, 0.9f, 0.08f, 0.9f);
-    // Approximately ten elementary-charge fields at 1 m; fixed across frames
+    // Approximately ten elementary-charge fields at 1 um; fixed across frames
     // and presets so a moving source changes arrow length at a fixed voxel.
-    constexpr double kElectricGlyphReferenceVm = 1.44e-8;
+    constexpr double kElectricGlyphReferenceVm = 1.44e4; // ten elementary charges at 1 um
 
     const char* speciesName(DebugProjectileSpecies species) {
         switch (species) {
@@ -52,12 +53,17 @@ void AtomicParticlesSimWorkspace::initializeFields() {
     const auto& g = m_fieldVoxelGrid;
     const FieldGridParams grid{make_uint3(g.dimensions.x,g.dimensions.y,g.dimensions.z),
         make_float3(g.origin.x,g.origin.y,g.origin.z),
-        make_float3(g.voxelEdgeM,g.voxelEdgeM,g.voxelEdgeM),g.voxelCount()};
+        make_float3(g.voxelEdgeM,g.voxelEdgeM,g.voxelEdgeM),g.voxelCount(),g.metersPerWorldUnit};
     bool ready = false;
     if (m_fieldSystem) ready = m_fieldSystem->setFieldGrid(grid);
     else {
         m_fieldSystem = std::make_unique<FieldSystem>(grid,true);
         ready = m_fieldSystem->initialized();
+    }
+    if (ready) {
+        auto solver=m_fieldSystem->getSolverParams();
+        solver.coulombSofteningM=static_cast<float>(0.25*g.voxelEdgeM*g.metersPerWorldUnit);
+        ready=m_fieldSystem->setSolverParams(solver);
     }
     m_fieldMirrorReady = ready;
     m_fieldGlyphPalette.resize(grid.cellCount);
@@ -92,6 +98,25 @@ void AtomicParticlesSimWorkspace::clearFieldDebug() {
 }
 
 void AtomicParticlesSimWorkspace::refreshDiagnosticFields() {
+    if (m_runtimeEnabled && m_activeMarkerCount > 0 && m_fieldSystem && !m_testFireMode) {
+        // Production fields must never be overwritten by the independent fired-source preview.
+        m_fieldMirrorReady=m_fieldSystem->downloadFields();
+        if (!m_fieldMirrorReady) { m_debugNotice="Field readback failed"; m_debugNoticeSeconds=5; return; }
+        const auto& rho=m_fieldSystem->getScalarHost(FieldSystem::CHARGE_DENSITY);
+        const auto& e=m_fieldSystem->getVectorHost(FieldSystem::ELECTRIC_FIELD);
+        const auto& b=m_fieldSystem->getVectorHost(FieldSystem::MAGNETIC_FIELD);
+        const auto& j=m_fieldSystem->getVectorHost(FieldSystem::CURRENT_DENSITY);
+        for (unsigned i=0;i<rho.size();++i) {
+            m_chargeDensity.set(i,rho[i]);
+            m_electricField.set(i,glm::vec3(e[i].x,e[i].y,e[i].z));
+            m_magneticField.set(i,glm::vec3(b[i].x,b[i].y,b[i].z));
+            m_currentDensity.set(i,glm::vec3(j[i].x,j[i].y,j[i].z));
+        }
+        computeCurl(m_magneticField,m_curlMagneticField);
+        m_electricGlyphColors.clear(); m_magneticGlyphColors.clear();
+        m_fieldSystem->setElectricGlyphColors({});
+        return;
+    }
     // Only explicitly fired debug projectiles source these diagnostics.
     // The production CUDA population is not a self-consistent PIC plasma.
     m_debugElectrodynamics.populateFields(m_fieldVoxelGrid, m_electricField,
@@ -119,6 +144,11 @@ void AtomicParticlesSimWorkspace::refreshDiagnosticFields() {
 }
 
 bool AtomicParticlesSimWorkspace::mirrorDiagnosticFields() {
+    if (m_runtimeEnabled && m_activeMarkerCount > 0) {
+        // Preview upload is scoped to renderFieldDebug; physics buffers stay owned by the solver.
+        m_fieldMirrorReady=m_fieldSystem && m_fieldSystem->initialized();
+        return m_fieldMirrorReady;
+    }
     if (!m_fieldSystem || !m_fieldSystem->initialized() ||
         m_fieldSystem->getCellCount() != m_chargeDensity.size()) return false;
     // Explicit transition path: fired CPU diagnostics -> GPU display fields.
@@ -156,7 +186,7 @@ void AtomicParticlesSimWorkspace::updateFieldDebug(
     }
     if (!m_runtimeEnabled || m_paused || frame.deltaTime <= 0.0f ||
         m_debugElectrodynamics.projectiles().empty()) return;
-    m_debugElectrodynamics.update(frame.deltaTime, m_fieldVoxelGrid);
+    m_debugElectrodynamics.update(double(frame.deltaTime)*kPhysicalSecondsPerWallSecond, m_fieldVoxelGrid);
     refreshDiagnosticFields();
 }
 
@@ -203,6 +233,34 @@ void AtomicParticlesSimWorkspace::renderFieldDebug(WorkspaceServices& services) 
     FieldDebugRenderer::drawProjectiles(*services.renderer, m_debugElectrodynamics.projectiles());
     FieldDebugRenderer::drawProjectileVelocities(m_debugElectrodynamics.projectiles(), m_fieldVoxelGrid.voxelEdgeM);
     bool gpuRendered = false;
+    bool diagnosticSnapshot = false;
+    // Test-fire is an explicitly separate visualization. Temporarily stage its
+    // E/scalar into the existing render buffers, then restore the physical fields.
+    // Existing FieldSystem host mirrors hold the snapshot; no second field owner.
+    if (m_activeMarkerCount && m_testFireMode && m_fieldBackend == FieldBackend::CUDA && m_fieldSystem) {
+        diagnosticSnapshot=m_fieldSystem->downloadFields();
+        if (diagnosticSnapshot) {
+            std::vector<float4> electric(m_electricField.size());
+            std::vector<float> scalar(electric.size());
+            const auto* selected=selectedScalarField();
+            for (unsigned i=0;i<electric.size();++i) {
+                const auto value=m_electricField.get(i);
+                electric[i]=make_float4(value.x,value.y,value.z,0);
+                scalar[i]=selected ? static_cast<float>(selected->get(i)) : 0;
+                const auto color=m_electricGlyphColors.size()==electric.size() ? m_electricGlyphColors[i] : kPositiveElectricColor;
+                m_fieldGlyphPalette[i]=make_float4(color.r,color.g,color.b,color.a);
+            }
+            const auto channel=m_scalarView==ScalarView::ElectronDensity ? FieldSystem::ELECTRON_DENSITY :
+                m_scalarView==ScalarView::ElectronTemperature ? FieldSystem::ELECTRON_TEMPERATURE : FieldSystem::CHARGE_DENSITY;
+            m_fieldMirrorReady=copyFieldToDevice(m_fieldSystem->getVectorDevicePtr(FieldSystem::ELECTRIC_FIELD),electric.data(),electric.size()*sizeof(float4)) &&
+                copyFieldToDevice(m_fieldSystem->getScalarDevicePtr(channel),scalar.data(),scalar.size()*sizeof(float)) &&
+                m_fieldSystem->setElectricGlyphColors(m_fieldGlyphPalette);
+        }
+        if (!diagnosticSnapshot || !m_fieldMirrorReady) {
+            m_fieldBackend=FieldBackend::CPU;
+            m_debugNotice="Diagnostic upload failed; CPU preview active"; m_debugNoticeSeconds=5;
+        }
+    }
     const bool gpuSelected = m_vectorView == VectorView::Electric || selectedScalarField();
     if (m_fieldBackend == FieldBackend::CUDA && gpuSelected &&
         (!m_fieldSystem || (!m_fieldMirrorReady && !mirrorDiagnosticFields()))) {
@@ -244,6 +302,11 @@ void AtomicParticlesSimWorkspace::renderFieldDebug(WorkspaceServices& services) 
         else FieldDebugRenderer::drawVector(*field, settings);
     }
     if (!gpuRendered) if (const auto* field = selectedScalarField()) FieldDebugRenderer::drawScalar(*field);
+    if (diagnosticSnapshot) {
+        m_fieldMirrorReady=m_fieldSystem->uploadFields();
+        m_fieldSystem->setElectricGlyphColors({});
+        if (!m_fieldMirrorReady) { m_paused=true; m_debugNotice="Physics paused: field snapshot restore failed"; m_debugNoticeSeconds=5; }
+    }
 }
 
 bool AtomicParticlesSimWorkspace::handleFieldDebugKey(
@@ -288,6 +351,7 @@ bool AtomicParticlesSimWorkspace::handleFieldDebugKey(
         m_debugNoticeSeconds = 3.0f;
         break;
     }
+    refreshDiagnosticFields();
     return true;
 }
 
@@ -412,6 +476,11 @@ void AtomicParticlesSimWorkspace::renderOverlay(
 }
 
 void AtomicParticlesSimWorkspace::appendFieldDebugStatus(WorkspaceRuntimeStatus& status) const {
+    std::ostringstream physicalTime;
+    physicalTime << std::scientific << std::setprecision(3) << m_elapsedSimulationTime;
+    status.detailLines.push_back("PHYSICS: 1 WORLD UNIT = 1 um | GRID ELECTROSTATICS | t = " + physicalTime.str() + " s");
+    status.detailLines.push_back("TIME: 10 ps / wall second | MAX STEP: 0.1 ps | E/B: SI; acceleration: m/s^2");
+    status.detailLines.push_back(m_testFireMode || !m_activeMarkerCount ? "FIELD SOURCES: FIRED DIAGNOSTIC PREVIEW (UNCOUPLED)" : "FIELD SOURCES: CUDA POPULATION | GRID ELECTROSTATICS");
     const char* scale = m_vectorRenderSettings.scale == VectorGlyphScale::Normalized ? "DIRECTION" :
         m_vectorRenderSettings.scale == VectorGlyphScale::RelativeMagnitude ? "RELATIVE" : "LOG";
     const auto* vector = selectedVectorField();
@@ -432,7 +501,7 @@ void AtomicParticlesSimWorkspace::appendFieldDebugStatus(WorkspaceRuntimeStatus&
     status.detailLines.push_back("F: Fire mode | 1: Electron  2: Ar+  3: Ar | LEFT CLICK: Center ray");
     status.detailLines.push_back("V: Vector view | B: Scalar view | G: Arrow scale | C: Clear tests");
     status.detailLines.push_back(std::string("H: FIELD DISPLAY: ") +
-        (m_fieldBackend == FieldBackend::CUDA ? "CUDA E/SCALAR (CPU DIAGNOSTIC MIRROR)" : "CPU REFERENCE"));
+        (m_fieldBackend == FieldBackend::CUDA ? "CUDA E/SCALAR" : "CPU DISPLAY OF SI FIELDS"));
     if (m_fieldSystem && !m_fieldSystem->waveSpatiallyResolved())
         status.detailLines.push_back("ANALYTIC WAVE UNDER-RESOLVED: fewer than 10 cells per wavelength");
     if (m_debugNoticeSeconds > 0.0f) status.detailLines.push_back(m_debugNotice);

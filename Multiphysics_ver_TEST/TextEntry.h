@@ -8,7 +8,9 @@ enum class TextEntryMode {
 	None = 0,
 	UnsignedInteger,
 	AssetName,
-	GeneralText
+	GeneralText,
+	NonnegativeReal,
+	SignedInteger
 };
 
 enum class TextEntryAction {
@@ -49,6 +51,13 @@ public:
 		std::size_t maximumLength
 	);
 
+    // Numeric sessions replace the initial text on the first typed character.
+    bool beginNonnegativeReal(const std::string& prompt, double initialValue);
+    bool beginSignedInteger(const std::string& prompt, int minimum, int maximum, int initialValue);
+    bool tryGetCommittedReal(double& value) const;
+    bool tryGetCommittedSigned(int& value) const;
+    static std::string formatReal(double value);
+
 	TextEntryAction handleRawKey(unsigned char rawKey);
 
 	bool isActive() const { return m_active; }
@@ -84,6 +93,7 @@ private:
 	TextEntryAction handleUnsignedIntegerKey(unsigned char rawKey);
 	TextEntryAction handleAssetNameKey(unsigned char rawKey);
 	TextEntryAction handleGeneralTextKey(unsigned char rawKey);
+	TextEntryAction handleNumericKey(unsigned char rawKey);
 	TextEntryAction commitActiveSession();
 	TextEntryAction reject(const char* message);
 
@@ -105,6 +115,10 @@ private:
 	static std::string normalizeAssetName(const std::string& value);
 	static std::size_t decimalDigitCount(unsigned int value);
 
+    bool m_replaceNumeric = false;
+    int m_signedMinimum = 0, m_signedMaximum = 0, m_committedSigned = 0;
+    double m_committedReal = 0.0;
+    bool m_hasCommittedSigned = false, m_hasCommittedReal = false;
 	bool m_active = false;
 	TextEntryMode m_mode = TextEntryMode::None;
 

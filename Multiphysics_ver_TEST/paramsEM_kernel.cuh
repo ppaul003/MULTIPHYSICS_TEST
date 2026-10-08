@@ -63,6 +63,9 @@ struct ParticleSimParams {
     // --- Domain boundary ---
     float boundary;
     float boundaryDamping;
+
+    // Geometry/radii: world units; velocity: world/s; acceleration: SI m/s^2.
+    double metersPerWorldUnit = 1.0;
 };
 
 //
@@ -84,6 +87,8 @@ struct FieldGridParams {
     float3 cellSize;
 
     uint32_t cellCount;
+    // Sampling/render geometry stays in world coordinates; physics uses SI.
+    double metersPerWorldUnit = 1.0;
 };
 
 
@@ -231,8 +236,8 @@ struct FieldRenderParams {
     float4 vectorColor = make_float4(0.2f, 0.9f, 1.0f, 0.7f);
 };
 
-static_assert(std::is_trivial<ParticleSimParams>::value, "CUDA constant POD");
-static_assert(std::is_trivial<FieldGridParams>::value, "CUDA constant POD");
+static_assert(std::is_trivially_copyable<ParticleSimParams>::value && std::is_standard_layout<ParticleSimParams>::value, "CUDA constant POD");
+static_assert(std::is_trivially_copyable<FieldGridParams>::value && std::is_standard_layout<FieldGridParams>::value, "CUDA constant POD");
 static_assert(std::is_trivial<FieldSolverParams>::value, "CUDA constant POD");
 
 #endif

@@ -55,7 +55,7 @@ namespace {
 
     bool domainBounds(const SpatialVoxelGrid3D& grid, glm::vec3& minimum, glm::vec3& maximum) {
         if (grid.voxelCount() == 0 || !std::isfinite(grid.voxelEdgeM) ||
-            !finiteVector(grid.origin)) return false;
+            !finiteVector(grid.origin) || !std::isfinite(grid.metersPerWorldUnit) || grid.metersPerWorldUnit <= 0) return false;
         SpatialVoxelRegion first, last;
         if (!grid.region(0, first) || !grid.region(grid.voxelCount() - 1, last)) return false;
         minimum = first.minimum;
@@ -155,7 +155,7 @@ void DebugElectrodynamics::update(double dt, const SpatialVoxelGrid3D& grid) {
     glm::vec3 minimum, maximum;
     if (!domainBounds(grid, minimum, maximum)) return;
     for (DebugProjectile& projectile : m_projectiles) {
-        projectile.position = glm::vec3(glm::dvec3(projectile.position) + glm::dvec3(projectile.velocity) * dt);
+        projectile.position = glm::vec3(glm::dvec3(projectile.position) + glm::dvec3(projectile.velocity) * (dt / grid.metersPerWorldUnit));
     }
     m_projectiles.erase(std::remove_if(m_projectiles.begin(), m_projectiles.end(),
         [&](const DebugProjectile& projectile) { return !inside(projectile.position, minimum, maximum); }),
@@ -197,7 +197,7 @@ void DebugElectrodynamics::populateFields(const SpatialVoxelGrid3D& grid,
 
     // One quarter of a field voxel edge is numerical debug softening,
     // never an atomic radius or a modification of the stored particle charge.
-    const double epsilonM = 0.25 * static_cast<double>(grid.voxelEdgeM);
+    const double epsilonM = 0.25 * static_cast<double>(grid.voxelEdgeM) * grid.metersPerWorldUnit;
     for (unsigned int id = 0; id < grid.voxelCount(); ++id) {
         SpatialVoxelRegion cell;
         grid.region(id, cell);
@@ -207,7 +207,7 @@ void DebugElectrodynamics::populateFields(const SpatialVoxelGrid3D& grid,
         double charge = 0.0;
         for (const DebugProjectile& projectile : m_projectiles) {
             if (projectile.chargeC == 0.0) continue;
-            const glm::dvec3 displacement = glm::dvec3(cell.center) - glm::dvec3(projectile.position);
+            const glm::dvec3 displacement = (glm::dvec3(cell.center) - glm::dvec3(projectile.position)) * grid.metersPerWorldUnit;
             const double r2 = glm::dot(displacement, displacement) + epsilonM * epsilonM;
             const double denominator = r2 * std::sqrt(r2);
             const glm::dvec3 sourceElectric = kCoulombFactor * projectile.chargeC * displacement / denominator;

@@ -188,7 +188,7 @@ bool FieldSystem::setWaveParams(const AnalyticWaveParams& wave) {
 bool FieldSystem::waveSpatiallyResolved() const {
     if (!m_waveParams.enabled || m_waveParams.frequencyHz == 0) return true;
     const float h = (std::max)(m_grid.cellSize.x, (std::max)(m_grid.cellSize.y, m_grid.cellSize.z));
-    return 299792458.0 / m_waveParams.frequencyHz >= 10.0 * h;
+    return 299792458.0 / m_waveParams.frequencyHz >= 10.0 * h * m_grid.metersPerWorldUnit;
 }
 
 bool FieldSystem::createGlyphBuffer() {
@@ -230,7 +230,7 @@ void FieldSystem::destroyGlyphBuffer() {
 bool FieldSystem::solveElectrostatics() {
     return result(m_bInitialized && solvePoissonJacobi(m_buffers.chargeDensity,
         m_buffers.electricPotential, m_buffers.electricPotentialScratch, m_grid, m_solverParams) &&
-        computeFieldElectric(m_buffers.electricPotential, m_buffers.electricField, m_grid),
+        computeFieldElectric(m_buffers.electricPotential, m_buffers.electricField, m_grid, true),
         "Grounded Poisson/E solve failed");
 }
 bool FieldSystem::computeElectricField() {
@@ -270,4 +270,21 @@ bool FieldSystem::buildRenderBuffers(ScalarField scalar, const FieldRenderParams
     m_glyphVertexCount=m_grid.cellCount*kFieldGlyphVerticesPerCell;
     m_scalarVertexCount=m_grid.cellCount;
     return result(true,"");
+}
+
+bool FieldSystem::updateParticleFields(const float4* positions,const float4* velocities,
+    const ParticleFieldMarker* markers,unsigned count,ElectrostaticMode mode,double timeSeconds) {
+    if(!m_bInitialized||!std::isfinite(timeSeconds)||
+       (mode!=ElectrostaticMode::Off && mode!=ElectrostaticMode::GridField && mode!=ElectrostaticMode::DirectCoulombDebug))
+        return result(false,"Invalid field timestep");
+    if(!depositParticleFields(positions,velocities,markers,count,m_buffers,m_grid)||
+       !clearVectorField(m_buffers.electricField,m_grid.cellCount)||
+       !clearVectorField(m_buffers.magneticField,m_grid.cellCount)) return result(false,"Field deposition/clear failed");
+    if(mode==ElectrostaticMode::GridField && !solveElectrostatics()) return false;
+    if(mode!=ElectrostaticMode::GridField &&
+       (!clearScalarField(m_buffers.electricPotential,m_grid.cellCount)||
+        !clearScalarField(m_buffers.electricPotentialScratch,m_grid.cellCount)))
+        return result(false,"Potential clear failed");
+    return result(addUniformField(m_buffers.electricField,m_buffers.magneticField,m_grid,m_uniformField)&&
+        applyAnalyticWave(timeSeconds),"Prescribed field composition failed");
 }

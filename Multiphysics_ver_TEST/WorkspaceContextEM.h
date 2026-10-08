@@ -20,7 +20,8 @@ struct SpatialVoxelRegion {
 struct SpatialVoxelGrid3D {
     glm::ivec3 dimensions = glm::ivec3(8, 8, 8);
     glm::vec3 origin = glm::vec3(-2.0f, -2.0f, -2.0f);
-    float voxelEdgeM = 0.5f;
+    float voxelEdgeM = 0.5f; // Historical name: geometry is in world units.
+    double metersPerWorldUnit = 1.0;
 
     unsigned int voxelCount() const {
         if (dimensions.x <= 0 || dimensions.y <= 0 || dimensions.z <= 0) {
@@ -61,7 +62,8 @@ struct SpatialVoxelGrid3D {
         result.maximum = result.minimum + glm::vec3(voxelEdgeM);
         result.center = (result.minimum + result.maximum) * 0.5f;
         result.halfExtent = glm::vec3(voxelEdgeM * 0.5f);
-        result.volumeM3 = voxelEdgeM * voxelEdgeM * voxelEdgeM;
+        const double edgeM = double(voxelEdgeM) * metersPerWorldUnit;
+        result.volumeM3 = static_cast<float>(edgeM * edgeM * edgeM);
         return true;
     }
 };
@@ -187,7 +189,8 @@ struct SpawnDensityRegionGrid3D {
         result.maximum = result.minimum + regionSize;
         result.center = (result.minimum + result.maximum) * 0.5f;
         result.halfExtent = regionSize * 0.5f;
-        result.volumeM3 = regionSize.x * regionSize.y * regionSize.z;
+        result.volumeM3 = static_cast<float>((double(regionSize.x)*baseGrid.metersPerWorldUnit) *
+            (double(regionSize.y)*baseGrid.metersPerWorldUnit) * (double(regionSize.z)*baseGrid.metersPerWorldUnit));
         return true;
     }
 
@@ -264,9 +267,8 @@ struct SpawnDensityRegionGrid3D {
         result.halfExtent = regionSize * 0.5f;
 
         result.volumeM3 =
-            regionSize.x *
-            regionSize.y *
-            regionSize.z;
+            static_cast<float>((double(regionSize.x)*baseGrid.metersPerWorldUnit) *
+            (double(regionSize.y)*baseGrid.metersPerWorldUnit) * (double(regionSize.z)*baseGrid.metersPerWorldUnit));
 
         return true;
     }
@@ -286,7 +288,8 @@ struct SpawnDensityRegionGrid3D {
         result.maximum = baseGrid.origin + domainSize;
         result.center = (result.minimum + result.maximum) * 0.5f;
         result.halfExtent = domainSize * 0.5f;
-        result.volumeM3 = domainSize.x * domainSize.y * domainSize.z;
+        result.volumeM3 = static_cast<float>((double(domainSize.x)*baseGrid.metersPerWorldUnit) *
+            (double(domainSize.y)*baseGrid.metersPerWorldUnit) * (double(domainSize.z)*baseGrid.metersPerWorldUnit));
         return true;
     }
 

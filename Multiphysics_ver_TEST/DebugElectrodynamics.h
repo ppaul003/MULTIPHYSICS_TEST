@@ -22,12 +22,12 @@ struct DiagnosticFieldSample {
 
 struct DebugProjectile {
     DebugProjectileSpecies species = DebugProjectileSpecies::Electron;
-    glm::vec3 position = glm::vec3(0.0f);  // m
+    glm::vec3 position = glm::vec3(0.0f);  // world units
     glm::vec3 velocity = glm::vec3(0.0f);  // m/s
     double chargeC = 0.0;
     double massKg = 0.0;
     // Visual marker properties, unrelated to atomic size or field softening.
-    float renderRadiusM = 0.015f;
+    float renderRadiusM = 0.015f; // Historical name: world/render units, not atomic radius.
     glm::vec4 color = glm::vec4(1.0f);
     float emissiveStrength = 0.0f;
     std::uint64_t eventId = 0;

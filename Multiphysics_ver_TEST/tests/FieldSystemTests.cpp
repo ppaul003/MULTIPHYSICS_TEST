@@ -2,6 +2,7 @@
 #include <GL/freeglut.h>
 #include "fieldSystem.h"
 #include "kernel.h"
+#include <helper_math.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -90,10 +91,18 @@ namespace {
             const double ax=1.0/(g.cellSize.x*g.cellSize.x), ay=1.0/(g.cellSize.y*g.cellSize.y),
                 az=1.0/(g.cellSize.z*g.cellSize.z);
             for (unsigned t=0; t<iterations; ++t) {
-                for (unsigned z=1; z<6; ++z) for (unsigned y=1; y<6; ++y) for (unsigned x=1; x<6; ++x) {
+                for (unsigned z=0; z<7; ++z) for (unsigned y=0; y<7; ++y) for (unsigned x=0; x<7; ++x) {
                     const unsigned i=x+7*(y+7*z);
-                    next[i]=(ax*(cpu[i-1]+cpu[i+1])+ay*(cpu[i-7]+cpu[i+7])+
-                        az*(cpu[i-49]+cpu[i+49])+rho[i]/8.8541878128e-12)/(2*(ax+ay+az));
+                    const unsigned coordinate[3]={x,y,z},stride[3]={1,7,49};
+                    const double weights[3]={ax,ay,az};
+                    double numerator=rho[i]/8.8541878128e-12,denominator=0;
+                    for(unsigned axis=0;axis<3;++axis) {
+                        if(coordinate[axis]>0) {numerator+=weights[axis]*cpu[i-stride[axis]];denominator+=weights[axis];}
+                        else denominator+=2*weights[axis];
+                        if(coordinate[axis]<6) {numerator+=weights[axis]*cpu[i+stride[axis]];denominator+=weights[axis];}
+                        else denominator+=2*weights[axis];
+                    }
+                    next[i]=numerator/denominator;
                 }
                 cpu.swap(next);
             }
@@ -150,6 +159,7 @@ namespace {
         float4 vel[3]={make_float4(0,4,0,0),make_float4(0,4,0,0),make_float4(0,4,0,0)};
         ParticleFieldMarker markers[3]{};
         for (auto& m:markers) m.kind=ParticleKind::Atomic;
+        markers[0].chargeC=1; markers[1].chargeC=-1;
         markers[0].chargeToMass=2; markers[1].chargeToMass=-2;
         float4 *dp=nullptr,*dv=nullptr,*da=nullptr;
         ParticleFieldMarker* dm=nullptr;
@@ -157,13 +167,126 @@ namespace {
             cudaMalloc(&da,sizeof(pos))==cudaSuccess && cudaMalloc(&dm,sizeof(markers))==cudaSuccess, "Coupling test allocation");
         check(copyFieldToDevice(dp,pos,sizeof(pos)) && copyFieldToDevice(dv,vel,sizeof(vel)) &&
             copyFieldToDevice(dm,markers,sizeof(markers)), "Coupling test upload");
+        float4 seed[3]={make_float4(0,7,0,0),make_float4(0,7,0,0),make_float4(0,7,0,0)};
+        check(copyFieldToDevice(da,seed,sizeof(seed)), "Seed non-EM acceleration");
         check(fields.computeLorentzAcceleration(dp,dv,dm,da,3), "Lorentz launch");
         float4 acc[3]{};
         check(copyFieldToHost(acc,da,sizeof(acc)), "Lorentz readback");
-        check(acc[0].x==28 && acc[1].x==-28 && acc[0].y==0 && acc[0].z==0,
+        check(acc[0].x==28 && acc[1].x==-28 && acc[0].y==7 && acc[0].z==0,
             "q/m*(E+v cross B), charge sign");
-        check(acc[2].x==0 && acc[2].y==0 && acc[2].z==0 && acc[2].w==0, "Neutral has zero EM acceleration");
+        check(acc[2].x==0 && acc[2].y==7 && acc[2].z==0 && acc[2].w==0, "Neutral preserves non-EM acceleration");
         cudaFree(dp); cudaFree(dv); cudaFree(da); cudaFree(dm);
+    }
+    void micrometerCoupling() {
+        FieldGridParams g{make_uint3(8,8,8),make_float3(-16),make_float3(4),512,1e-6};
+        check(std::abs(std::pow(32*g.metersPerWorldUnit,3)-3.2768e-14)<1e-28,"32 um cube SI volume");
+        FieldSystem fields(g,false);
+        check(fields.initialized(),"Micrometer field grid");
+        float4 pos[3]={make_float4(-1,0,0,9),make_float4(1,0,0,8),make_float4(0,0,0,7)};
+        float4 vel[3]={make_float4(0,4e6f,0,0.0063f),make_float4(0),make_float4(0)};
+        ParticleFieldMarker marker[3]{};
+        for(auto& m:marker) m.kind=ParticleKind::Atomic;
+        marker[0].chargeC=1.602176634e-19f; marker[0].chargeToMass=2;
+        marker[1].chargeC=marker[0].chargeC; marker[1].chargeToMass=2;
+        float4 *dp=nullptr,*dv=nullptr,*da=nullptr; ParticleFieldMarker* dm=nullptr;
+        check(cudaMalloc(&dp,sizeof(pos))==cudaSuccess && cudaMalloc(&dv,sizeof(vel))==cudaSuccess &&
+            cudaMalloc(&da,sizeof(pos))==cudaSuccess && cudaMalloc(&dm,sizeof(marker))==cudaSuccess,"SI particle allocation");
+        auto upload=[&]() {check(copyFieldToDevice(dp,pos,sizeof(pos))&&copyFieldToDevice(dv,vel,sizeof(vel))&&
+            copyFieldToDevice(dm,marker,sizeof(marker)),"SI particle upload");};
+        upload();
+        ParticleSimParams params{};
+        params.gridSize=make_uint3(8,8,8); params.numCells=512;params.cellSize=make_float3(4);
+        params.worldOrigin=make_float3(-16);params.boundary=16;params.boundaryDamping=-0.5f;
+        params.globalDamping=1;params.gravity=make_float3(0,7,0);params.metersPerWorldUnit=1e-6;
+        setParameters(&params);
+        check(initializeParticleAcceleration(da,dm,3),"Gravity owns initialization");
+        UniformEMField uniform;uniform.enabled=true;uniform.electricVm=make_float3(2,0,0);uniform.magneticT=make_float3(0,0,3);
+        fields.setUniformField(uniform);
+        check(fields.updateParticleFields(dp,dv,dm,3,ElectrostaticMode::Off,0)&&fields.downloadFields(),"CIC plus external-only fields");
+        double totalCharge=0,totalJy=0;
+        const double volume=std::pow(4e-6,3);
+        for(float r:fields.getScalarHost(FieldSystem::CHARGE_DENSITY)) totalCharge+=r*volume;
+        for(auto j:fields.getVectorHost(FieldSystem::CURRENT_DENSITY)) totalJy+=j.y*volume;
+        check(std::abs(totalCharge-2*double(marker[0].chargeC))<1e-25,"CIC integrated charge uses cubic SI scale");
+        check(std::abs(totalJy-double(marker[0].chargeC)*4)<1e-25,"J uses velocity converted to m/s");
+        check(fields.computeLorentzAcceleration(dp,dv,dm,da,3),"SI Lorentz coupling");
+        float4 a[3];check(copyFieldToHost(a,da,sizeof(a)),"SI acceleration readback");
+        check(std::abs(a[0].x-28)<1e-5 && a[0].y==7 && a[2].x==0 && a[2].y==7,"Lorentz unit conversion and neutral gravity");
+        check(fields.updateParticleFields(dp,dv,dm,3,ElectrostaticMode::Off,0)&&fields.downloadFields(),"Rebuild prescribed fields");
+        check(fields.getVectorHost(FieldSystem::ELECTRIC_FIELD)[0].x==2,"External fields do not accumulate across steps");
+        check(!computeDirectCoulomb(dp,dm,da,3,ElectrostaticMode::GridField,1e-8),"Grid/direct mutual exclusion");
+        check(!computeDirectCoulomb(dp,dm,da,2049,ElectrostaticMode::DirectCoulombDebug,1e-8),"Small-N direct guard");
+        check(!initializeParticleAcceleration(da,dm,49153),"Capacity guard before memory access");
+        check(initializeParticleAcceleration(da,dm,3)&&computeDirectCoulomb(dp,dm,da,3,ElectrostaticMode::DirectCoulombDebug,1e-8)&&
+            copyFieldToHost(a,da,sizeof(a)),"Direct Coulomb SI launch");
+        const double r2=4e-12+1e-16;
+        const double expected=8.9875517923e9*2*double(marker[1].chargeC)*2e-6/(r2*std::sqrt(r2));
+        check(a[0].x<0 && a[1].x>0 && std::abs(a[0].x+expected)<expected*2e-6,"Like charges repel with physical 2 um separation");
+        marker[1].chargeC=-marker[1].chargeC;marker[1].chargeToMass=-2;upload();
+        check(initializeParticleAcceleration(da,dm,3)&&computeDirectCoulomb(dp,dm,da,3,ElectrostaticMode::DirectCoulombDebug,1e-8)&&
+            copyFieldToHost(a,da,sizeof(a)),"Opposite Coulomb launch");
+        check(a[0].x>0 && a[1].x<0 && a[2].x==0,"Opposite charges attract, neutral ignores EM");
+        // Known SI kick, independent of electrostatic solver and contact parameters.
+        params.gravity=make_float3(1,0,0);setParameters(&params);
+        pos[0]=make_float4(0,0,0,9);vel[0]=make_float4(0,0,0,0.0063f);
+        marker[2].kind=ParticleKind::Inactive;pos[2]=make_float4(3,2,1,7);vel[2]=make_float4(5,0,0,0.01f);upload();
+        check(initializeParticleAcceleration(da,dm,3),"Initialize SI integration");
+        integrateSystem(reinterpret_cast<float*>(dp),reinterpret_cast<float*>(dv),reinterpret_cast<float*>(da),1e-6f,3,dm);
+        check(copyFieldToHost(pos,dp,sizeof(pos))&&copyFieldToHost(vel,dv,sizeof(vel)),"SI push readback");
+        check(std::abs(vel[0].x-1)<1e-6 && std::abs(pos[0].x-1e-6)<1e-12 && pos[0].w==9 && vel[0].w==0.0063f,
+            "One SI kick and drift, metadata and radius preserved");
+        check(pos[2].x==3 && vel[2].x==5,"Inactive slot is not pushed");
+        check(initializeParticleAcceleration(nullptr,nullptr,0)&&
+            fields.updateParticleFields(nullptr,nullptr,nullptr,0,ElectrostaticMode::GridField,0)&&fields.downloadFields(),"Empty population clears fields safely");
+        for(float rho:fields.getScalarHost(FieldSystem::CHARGE_DENSITY)) check(rho==0,"No stale charge at zero particles");
+        // Owner-specific scale: alternating a meter grid must not contaminate the um owner.
+        FieldSystem meterFields(grid(),false);
+        check(meterFields.computeElectricField()&&fields.computeElectricField(),"Alternating meter/micrometer owners");
+        auto bad=g;bad.metersPerWorldUnit=0;check(!validFieldGrid(bad),"Reject zero physical scale");
+        bad=g;bad.metersPerWorldUnit=std::numeric_limits<double>::quiet_NaN();check(!validFieldGrid(bad),"Reject NaN physical scale");
+        // Equal rho on geometrically similar grids: phi scales as L^2, E as L.
+        auto meterGrid=g;meterGrid.metersPerWorldUnit=1;
+        FieldSystem meterReference(meterGrid,false);
+        check(fields.clear(),"Clear unit comparison fields");
+        fields.getScalarHost(FieldSystem::CHARGE_DENSITY)[292]=1e-12f;
+        meterReference.getScalarHost(FieldSystem::CHARGE_DENSITY)[292]=1e-12f;
+        check(fields.uploadFields()&&meterReference.uploadFields()&&meterReference.solveElectrostatics()&&
+            fields.solveElectrostatics()&&fields.downloadFields()&&meterReference.downloadFields(),"Alternating SI Poisson owners");
+        for(unsigned i=0;i<g.cellCount;++i) {
+            const double expectedPhi=meterReference.getScalarHost(FieldSystem::ELECTRIC_POTENTIAL)[i]*1e-12;
+            check(std::abs(fields.getScalarHost(FieldSystem::ELECTRIC_POTENTIAL)[i]-expectedPhi)<1e-17,"Poisson metric squared scaling");
+            const auto me=meterReference.getVectorHost(FieldSystem::ELECTRIC_FIELD)[i];
+            const auto ue=fields.getVectorHost(FieldSystem::ELECTRIC_FIELD)[i];
+            check(std::abs(ue.x-double(me.x)*1e-6)<1e-11,"Gradient metric scaling");
+        }
+        AnalyticWaveParams wave;wave.enabled=true;wave.amplitudeVm=2;wave.frequencyHz=float(299792458.0/64e-6);
+        check(fields.setWaveParams(wave)&&fields.waveSpatiallyResolved()&&fields.clear()&&fields.applyAnalyticWave(0)&&fields.downloadFields(),"Resolved micrometer wave");
+        const double phase=6.2831853071795864769*double(wave.frequencyHz)*(-14e-6)/299792458.0;
+        check(std::abs(fields.getVectorHost(FieldSystem::ELECTRIC_FIELD)[0].x-2*std::cos(phase))<1e-5,"Wave phase uses meters");
+        // Contact is additive SI acceleration; neutral pairs still interact.
+        params.gravity=make_float3(0,0,4);params.spring=100;params.damping=10;params.shear=5;setParameters(&params);
+        pos[0]=make_float4(-0.005f,0,0,1);pos[1]=make_float4(0.005f,0,0,1);
+        vel[0]=make_float4(0,1e6f,0,0.0063f);vel[1]=make_float4(0,0,0,0.0063f);
+        marker[0]={};marker[1]={};marker[0].kind=marker[1].kind=ParticleKind::Atomic;upload();
+        unsigned *indices=nullptr,*start=nullptr,*end=nullptr;
+        check(cudaMalloc(&indices,2*sizeof(unsigned))==cudaSuccess&&cudaMalloc(&start,512*sizeof(unsigned))==cudaSuccess&&
+            cudaMalloc(&end,512*sizeof(unsigned))==cudaSuccess,"Contact test allocation");
+        const unsigned order[2]={0,1};std::vector<unsigned> starts(512,0xffffffffu),ends(512,0);
+        starts[291]=0;ends[291]=1;starts[292]=1;ends[292]=2;
+        check(copyFieldToDevice(indices,order,sizeof(order))&&copyFieldToDevice(start,starts.data(),512*sizeof(unsigned))&&
+            copyFieldToDevice(end,ends.data(),512*sizeof(unsigned)),"Contact neighbor tables");
+        check(initializeParticleAcceleration(da,dm,2)&&computeContactAcceleration(da,dp,dv,indices,start,end,dm,2)&&
+            copyFieldToHost(a,da,sizeof(a)),"Additive contact launch");
+        check(std::abs(a[0].x+2.6e-7)<1e-12&&std::abs(a[1].x-2.6e-7)<1e-12&&
+            a[0].y==-15&&a[1].y==15&&a[0].z==4,"Contact spring/damping/shear SI units preserve gravity");
+        pos[1]=pos[0];upload();starts[291]=0;ends[291]=2;starts[292]=0xffffffffu;
+        check(copyFieldToDevice(start,starts.data(),512*sizeof(unsigned))&&copyFieldToDevice(end,ends.data(),512*sizeof(unsigned))&&
+            initializeParticleAcceleration(da,dm,2)&&computeContactAcceleration(da,dp,dv,indices,start,end,dm,2)&&
+            copyFieldToHost(a,da,sizeof(a)),"Coincident contact launch");
+        check(std::isfinite(a[0].x)&&a[0].x==-a[1].x,"Coincident normal is finite and antisymmetric");
+        cudaFree(indices);cudaFree(start);cudaFree(end);
+        check(cudaDeviceSynchronize()==cudaSuccess,"SI kernels execute successfully");
+        cudaFree(dp);cudaFree(dv);cudaFree(da);cudaFree(dm);
     }
     std::vector<FieldGlyphVertex> readVbo(unsigned vbo, unsigned count) {
         std::vector<FieldGlyphVertex> result(count);
@@ -233,6 +356,7 @@ int main(int argc, char** argv) {
         lifecycle();
         poisson();
         waveAndLorentz();
+        micrometerCoupling();
         glutInit(&argc,argv);
         glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE | GLUT_DEPTH);
         glutInitWindowSize(64,64);

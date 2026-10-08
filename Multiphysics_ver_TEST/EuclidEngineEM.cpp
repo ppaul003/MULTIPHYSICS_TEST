@@ -445,7 +445,7 @@ void EuclidEngine::onKeyboard(unsigned char key, int x, int y) {
     const KeyboardInput::KeyEvent event = m_keyboard.onKey(key, x, y);
     const unsigned char physicalKey = static_cast<unsigned char>(tolower(key));
 
-    TheArbiter::ArbiterResult result = m_arbiter.routeKeyboard(event);
+    TheArbiter::ArbiterResult result = m_arbiter.routeKeyboard(event, m_tesseract.textEntryActive());
     result.workspaceInput.repeated = m_keysDown[physicalKey];
 
     m_keysDown[physicalKey] = true;
@@ -464,7 +464,7 @@ void EuclidEngine::onKeyboard(unsigned char key, int x, int y) {
 void EuclidEngine::onKeyboardUp(unsigned char key, int x, int y) {
 
     m_keysDown[static_cast<unsigned char>(tolower(key))] = false;
-    const auto result = m_arbiter.routeKeyboard(m_keyboard.onKey(key, x, y));
+    const auto result = m_arbiter.routeKeyboard(m_keyboard.onKey(key, x, y), m_tesseract.textEntryActive());
     if (result.hasWorkspaceInput) m_tesseract.handleInputRelease(result.workspaceInput);
 }
 

@@ -1,12 +1,73 @@
 #include "TextEntry.h"
 
 #include <limits>
+#include <charconv>
+#include <cmath>
 
 namespace {
 	constexpr unsigned char kEnter = 13;
 	constexpr unsigned char kEscape = 27;
 	constexpr unsigned char kBackspace = 8;
 	constexpr unsigned char kDeleteBackspace = 127;
+}
+
+std::string TextEntrySession::formatReal(double value) {
+    char text[768];
+    const auto result = std::to_chars(text, text + sizeof(text), value, std::chars_format::fixed);
+    return result.ec == std::errc{} ? std::string(text, result.ptr) : std::string{};
+}
+
+bool TextEntrySession::beginNonnegativeReal(const std::string& prompt, double initialValue) {
+    reset();
+    if (!std::isfinite(initialValue) || initialValue < 0) {
+        m_statusMessage = "A finite nonnegative default is required.";
+        return false;
+    }
+    m_mode = TextEntryMode::NonnegativeReal;
+    m_active = m_replaceNumeric = true;
+    m_prompt = prompt;
+    m_buffer = formatReal(initialValue);
+    m_maximumLength = 768;
+    return true;
+}
+
+bool TextEntrySession::beginSignedInteger(const std::string& prompt, int minimum, int maximum, int initialValue) {
+    reset();
+    if (minimum > maximum || initialValue < minimum || initialValue > maximum) {
+        m_statusMessage = "Signed-integer range/default is invalid.";
+        return false;
+    }
+    m_mode = TextEntryMode::SignedInteger;
+    m_active = m_replaceNumeric = true;
+    m_prompt = prompt;
+    m_buffer = std::to_string(initialValue);
+    m_signedMinimum = minimum;
+    m_signedMaximum = maximum;
+    m_maximumLength = 11;
+    return true;
+}
+
+TextEntryAction TextEntrySession::handleNumericKey(unsigned char rawKey) {
+    std::string candidate = m_replaceNumeric ? std::string{} : m_buffer;
+    const bool digit = rawKey >= '0' && rawKey <= '9';
+    const bool decimal = m_mode == TextEntryMode::NonnegativeReal && rawKey == '.' && candidate.find('.') == std::string::npos;
+    const bool sign = m_mode == TextEntryMode::SignedInteger && rawKey == '-' && candidate.empty();
+    if (!digit && !decimal && !sign) return reject("Character is not valid for this numeric field.");
+    if (candidate.size() >= m_maximumLength) return reject("Numeric entry exceeds maximum length.");
+    candidate.push_back(static_cast<char>(rawKey));
+    m_buffer = candidate;
+    m_replaceNumeric = false;
+    m_statusMessage = "Entry changed.";
+    return TextEntryAction::Changed;
+}
+
+bool TextEntrySession::tryGetCommittedReal(double& value) const {
+    if (!m_hasCommittedReal) return false;
+    value = m_committedReal; return true;
+}
+bool TextEntrySession::tryGetCommittedSigned(int& value) const {
+    if (!m_hasCommittedSigned) return false;
+    value = m_committedSigned; return true;
 }
 
 bool TextEntrySession::beginUnsignedInteger(
@@ -166,12 +227,16 @@ TextEntryAction TextEntrySession::handleRawKey(unsigned char rawKey) {
 			return reject("Nothing to delete.");
 		}
 
+		m_replaceNumeric = false;
 		m_buffer.pop_back();
 		m_statusMessage = "Entry changed.";
 		return TextEntryAction::Changed;
 	}
 
 	switch (m_mode) {
+    case TextEntryMode::NonnegativeReal:
+    case TextEntryMode::SignedInteger:
+        return handleNumericKey(rawKey);
 	case TextEntryMode::UnsignedInteger:
 		return handleUnsignedIntegerKey(rawKey);
 
@@ -248,6 +313,26 @@ TextEntryAction TextEntrySession::handleGeneralTextKey(unsigned char rawKey) {
 
 TextEntryAction TextEntrySession::commitActiveSession() {
 	switch (m_mode) {
+    case TextEntryMode::NonnegativeReal: {
+        double value = 0.0;
+        const auto result = std::from_chars(m_buffer.data(), m_buffer.data()+m_buffer.size(), value, std::chars_format::fixed);
+        if (result.ec != std::errc{} || result.ptr != m_buffer.data()+m_buffer.size() || !std::isfinite(value) || value < 0)
+            return reject("A finite nonnegative decimal is required.");
+        m_committedReal = value;
+        m_hasCommittedReal = true;
+        m_committedText = m_normalizedText = formatReal(value);
+        break;
+    }
+    case TextEntryMode::SignedInteger: {
+        int value = 0;
+        const auto result = std::from_chars(m_buffer.data(), m_buffer.data()+m_buffer.size(), value);
+        if (result.ec != std::errc{} || result.ptr != m_buffer.data()+m_buffer.size() || value < m_signedMinimum || value > m_signedMaximum)
+            return reject("Signed integer is outside the allowed range.");
+        m_committedSigned = value;
+        m_hasCommittedSigned = true;
+        m_committedText = m_normalizedText = std::to_string(value);
+        break;
+    }
 	case TextEntryMode::UnsignedInteger: {
 		unsigned int value = 0;
 
@@ -354,6 +439,8 @@ void TextEntrySession::clearActiveSession() {
 }
 
 void TextEntrySession::clearCommittedResult() {
+    m_replaceNumeric = false;
+    m_hasCommittedReal = m_hasCommittedSigned = false;
 	m_committedText.clear();
 	m_normalizedText.clear();
 	m_committedUnsigned = 0;

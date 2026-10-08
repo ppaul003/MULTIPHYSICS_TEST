@@ -21,6 +21,7 @@ struct WorkspacePanelRow {
     std::string value;
     bool selectable = false;
     bool selected = false;
+    bool valueHasDelimiters = false;
 };
 
 struct WorkspacePanelSection {

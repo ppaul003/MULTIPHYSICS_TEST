@@ -236,12 +236,20 @@ void ViewPort::drawHeader(const WorkspacePresentation& p) {
 void ViewPort::drawSections(const WorkspacePresentation& p) {
     float y = 290.0f;
     const float x = 95.0f;
+    // Keep dense configuration summaries above the anchored footer.
+    float contentHeight = p.statusLine.empty() ? 0.0f : 56.0f;
+    for (const auto& section : p.sections)
+        contentHeight += (section.heading.empty() ? 0.0f : 42.0f) + m_rowSpacing * static_cast<float>(section.rows.size());
+    contentHeight += 34.0f * static_cast<float>(p.postStatusLines.size() + p.capabilityLines.size());
+    const float availableHeight = static_cast<float>(m_windowHeight) - m_margin - 90.0f - y;
+    const float spacingScale = contentHeight > 0.0f
+        ? (std::min)(1.0f, (std::max)(0.65f, availableHeight / contentHeight)) : 1.0f;
 
     for (const WorkspacePanelSection& section : p.sections) {
         if (!section.heading.empty()) {
             glColor4f(0.85f, 0.95f, 1.0f, m_panelSlide);
             drawText2D(panelX(x), y, section.heading.c_str(), GLUT_BITMAP_HELVETICA_18);
-            y += 42.0f;
+            y += 42.0f * spacingScale;
         }
 
         for (const WorkspacePanelRow& row : section.rows) {
@@ -255,17 +263,17 @@ void ViewPort::drawSections(const WorkspacePresentation& p) {
 
             std::string line = row.label;
             if (!row.value.empty()) {
-                line += " { ";
+                line += row.valueHasDelimiters ? " " : " { ";
                 line += row.value;
-                line += " }";
+                if (!row.valueHasDelimiters) line += " }";
             }
             drawText2D(panelX(x), y, line.c_str(), GLUT_BITMAP_HELVETICA_18);
-            y += m_rowSpacing;
+            y += m_rowSpacing * spacingScale;
         }
     }
 
     if (!p.statusLine.empty()) {
-        y += 12.0f;
+        y += 12.0f * spacingScale;
         float alpha = m_panelSlide;
 
         if (p.statusBlink) {
@@ -297,7 +305,7 @@ void ViewPort::drawSections(const WorkspacePresentation& p) {
             GLUT_BITMAP_HELVETICA_18
         );
 
-        y += 44.0f;
+        y += 44.0f * spacingScale;
     }
 
     // ---------------------------------------------------------
@@ -314,7 +322,7 @@ void ViewPort::drawSections(const WorkspacePresentation& p) {
             GLUT_BITMAP_HELVETICA_18
         );
 
-        y += 34.0f;
+        y += 34.0f * spacingScale;
     }
     for (const auto& line : p.capabilityLines) {
         switch (line.tone) {
@@ -324,7 +332,7 @@ void ViewPort::drawSections(const WorkspacePresentation& p) {
         default: glColor4f(0.72f, 0.78f, 0.82f, m_panelSlide); break;
         }
         drawText2D(panelX(x), y, line.text.c_str(), GLUT_BITMAP_HELVETICA_18);
-        y += 34.0f;
+        y += 34.0f * spacingScale;
     }
 }
 
@@ -498,9 +506,9 @@ void ViewPort::drawSubLayerPresentation(
 
         string line = row.label;
         if (!row.value.empty()) {
-            line += " { ";
+            line += row.valueHasDelimiters ? " " : " { ";
             line += row.value;
-            line += " }";
+            if (!row.valueHasDelimiters) line += " }";
         }
 
         drawText2D(

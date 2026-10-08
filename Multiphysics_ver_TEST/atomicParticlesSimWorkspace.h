@@ -10,6 +10,7 @@
 #include <vector_types.h>
 
 #include "IWorkspaceEM.h"
+#include "AtomicInitialConditions.h"
 #include "RuntimeSubLayerTraversal.h"
 #include "TextEntry.h"
 #include "TheArbiterEM.h"
@@ -45,6 +46,8 @@ public:
     ) override;
 
     WorkspacePresentation buildPresentation() const override;
+    bool textEntryActive() const override;
+    const AtomicInitialization::Population& runtimePopulation() const { return m_runtimeConfig; }
     WorkspaceMenuPresentation buildMenu() const override;
     bool handleMenuCommand(int command, WorkspaceServices& services) override;
     bool handlePointerInput(const WorkspacePointerEvent& input, WorkspaceServices& services) override;
@@ -64,15 +67,16 @@ private:
 
     enum class Layer2Row {
         ParticleSpecies = 0,
-        TotalGasDensity,
+        DensityType,
+        Density,
         IonizationFraction,
         ElectronTemperature,
-        IonTemperature,
-        NeutralTemperature,
-        VoxelSpawn,
+        GasInput,
         RunSimulation,
         Count
     };
+
+    using DensityType = AtomicInitialization::DensityType;
 
     enum class InitialMaterialPhase { Plasma = 0, Gas, Liquid, Solid, Count };
 
@@ -128,37 +132,19 @@ private:
 
         // --- Layer 2 ---
         ParticleSpecies particleSpecies = ParticleSpecies::Argon;
-        unsigned int totalGasDensity = 0;
-        float ionizationFraction = 0.10f;
-        float electronTemperature = 0.0f;
-        float ionTemperature = 0.0f;
-        float neutralTemperature = 0.0f;
-        unsigned int spawnSelectionIndex = 0;
+        DensityType densityType = DensityType::Electron;
+        double densityMantissa = 0.0;
+        int densityExponent = 0;
+        double ionizationFraction = 0.10;
+        double electronTemperature = 0.0;
+        double gasTemperature = 0.0;
     };
 
-    struct RuntimeConfig {
-
-        ParticleSpecies particleSpecies = ParticleSpecies::Argon;
-
-        unsigned int totalGasCount = 0;
-        unsigned int neutralCount = 0;
-        unsigned int ionCount = 0;
-        unsigned int electronCount = 0;
-        unsigned int activeMarkerCount = 0;
-
-        float ionizationFraction = 0.0f;
-
-        float electronTemperatureEv = 0.0f;
-        float ionTemperatureEv = 0.0f;
-        float neutralTemperatureK = 0.0f;
-
-        unsigned int selectedSpawnSelectionIndex = 0;
-        float selectedSpawnVolumeM3 = 0.0f;
-
+    struct RuntimeConfig : AtomicInitialization::Population {
+        // Exact input snapshot for change-back/resume, including Layer 1.
+        DraftConfig initialConditions;
         float speciesRadius = 0.0f;
         float placementRadius = 0.0f;
-
-        GridLayout gridLayout = GridLayout::None;
     };
 
     WorkspacePresentation buildLayer1Presentation() const;
@@ -176,20 +162,14 @@ private:
     bool runtimeMatchesDraft() const;
     void clearRuntime();
     bool applyRuntimeConfig();
-    bool resolveRuntimeConfig(RuntimeConfig& resolved) const;
+    bool resolveRuntimeConfig(RuntimeConfig& resolved, std::string& error) const;
     bool configureRuntimeVisuals();
-
-    unsigned int neutralCount() const;
-    unsigned int ionCount() const;
-    unsigned int electronCount() const;
-    unsigned int requestedMarkerCount() const;
 
     float selectedSpeciesRenderRadius() const;
 
     void renderConfiguredGrid(WorkspaceServices& services, GridLayout layout) const;
-    void renderSelectedSpawnRegion(WorkspaceServices& services) const;
-
-    void beginGasDensityEntry();
+    void beginDensityEntry();
+    std::string densityNotation() const;
 
     void moveLayer1Cursor(int direction);
     void moveLayer2Cursor(int direction);
@@ -220,8 +200,6 @@ private:
     const VectorField3D* selectedVectorField() const;
     const ScalarField3D* selectedScalarField() const;
     
-    std::string spawnSelectionText(unsigned int selectionIndex) const;
-
     const char* vectorViewName() const;
     const char* scalarViewName() const;
     const char* initialMaterialPhaseName() const;
@@ -235,13 +213,12 @@ private:
     static constexpr float kHeliumRadius = 0.0047f;
     static constexpr float kArgonRadius = 0.0063f;
 
-    float m_simulationBoxSizeM = 0.0f;
+    float m_simulationBoxSizeWorld = 0.0f;
 
     static constexpr float kMaximumSupportedRadius = 0.0156f;
-    static constexpr unsigned int kParticleCapacity = 49152;
+    static constexpr unsigned int kParticleCapacity = AtomicInitialization::kParticleCapacity;
     static constexpr unsigned int kMajorGridEvery = 8;
     static constexpr unsigned int kGridSize = 64;
-    static constexpr unsigned int kDefaultCountStep = 100;
     static constexpr unsigned int kResetSeed = 1973;
 
     std::unique_ptr<ParticleSystem> m_particleSystem;
@@ -285,6 +262,7 @@ private:
 
     Layer1Row m_layer1Selection = Layer1Row::WorkspaceSelection;
     Layer2Row m_layer2Selection = Layer2Row::ParticleSpecies;
+    bool m_densityEditingExponent = false;
 
     WorkspaceStatusTone m_statusTone = WorkspaceStatusTone::Ready;
 
@@ -297,7 +275,10 @@ private:
 
     unsigned int m_activeMarkerCount = 0;
 
-    float m_elapsedSimulationTime = 0.0f;
+    // Physical seconds, deliberately separate from wall/camera time.
+    static constexpr double kPhysicalSecondsPerWallSecond = 1.0e-11;
+    static constexpr double kMaxPhysicsStepSeconds = 1.0e-13;
+    double m_elapsedSimulationTime = 0.0;
 };
 
 #endif

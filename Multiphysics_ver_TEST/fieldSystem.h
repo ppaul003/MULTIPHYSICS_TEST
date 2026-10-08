@@ -62,6 +62,9 @@ public:
 
     // Device operations; download explicitly to inspect results on CPU.
     bool solveElectrostatics();
+    bool updateParticleFields(const float4* positions,const float4* velocities,
+        const ParticleFieldMarker* markers,unsigned count,ElectrostaticMode mode,double timeSeconds);
+    void setUniformField(const UniformEMField& source) { m_uniformField = source; }
     bool computeElectricField();
     // Additive source: clear/recompute base E/B before each new frame.
     bool applyAnalyticWave(double timeSeconds);
@@ -90,6 +93,7 @@ protected:
     bool m_bInitialized = false;
     bool m_bUseOpenGL = false;
 
+    UniformEMField m_uniformField{};
     FieldGridParams m_grid{};
     FieldSolverParams m_solverParams{};
     AnalyticWaveParams m_waveParams{};

@@ -7,7 +7,7 @@
 namespace {
     void validateGrid(const SpatialVoxelGrid3D& grid) {
         if (grid.voxelCount() == 0 || !std::isfinite(grid.voxelEdgeM) ||
-            grid.voxelEdgeM <= 0.0f) {
+            grid.voxelEdgeM <= 0.0f || !std::isfinite(grid.metersPerWorldUnit) || grid.metersPerWorldUnit <= 0.0) {
             throw std::invalid_argument("Voxel fields require a nonempty physical grid and positive spacing");
         }
     }
@@ -30,7 +30,7 @@ namespace {
         glm::ivec3 high = index;
         low[axis] = (std::max)(0, index[axis] - 1);
         high[axis] = (std::min)(grid.dimensions[axis] - 1, index[axis] + 1);
-        const float distanceM = static_cast<float>(high[axis] - low[axis]) * grid.voxelEdgeM;
+        const float distanceM = static_cast<float>(high[axis] - low[axis]) * grid.voxelEdgeM * static_cast<float>(grid.metersPerWorldUnit);
         return (field.get(high) - field.get(low)) / distanceM;
     }
 }

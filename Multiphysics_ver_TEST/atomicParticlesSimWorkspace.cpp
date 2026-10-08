@@ -53,6 +53,12 @@ bool AtomicParticlesSimWorkspace::initialize(WorkspaceServices& services) {
     m_particleSystem =
         make_unique<ParticleSystem>(kParticleCapacity, collisionGrid, true);
 
+    m_particleSystem->setMetersPerWorldUnit(AtomicInitialization::kMicrometerToMeter);
+    // Phenomenological soft-contact response with a 1 ps spring timescale.
+    m_particleSystem->setCollideSpring(1.0e24f);
+    m_particleSystem->setCollideDamping(2.0e11f);
+    m_particleSystem->setCollideShear(1.0e11f);
+    m_debugElectrodynamics.setSpeedMps(7.5e4f); // 0.75 world units/wall second at the physical time scale.
     syncSimulationDomain(services);
     if (!m_particleSystem->setActiveParticleCount(0))
         return false;
@@ -68,12 +74,14 @@ void AtomicParticlesSimWorkspace::syncSimulationDomain(WorkspaceServices& servic
     if (!preset || !preset->enabled || services.renderer->getGridDimSize() != preset->collisionGridDim) return;
     const auto currentGrid = m_particleSystem->getGridSize();
     const uint dimension = static_cast<uint>(preset->collisionGridDim);
-    if (boxSize == m_simulationBoxSizeM && currentGrid.x == dimension &&
+    if (boxSize == m_simulationBoxSizeWorld && currentGrid.x == dimension &&
         currentGrid.y == dimension && currentGrid.z == dimension &&
         m_fieldVoxelGrid.dimensions == ivec3(preset->fieldGridDim)) return;
     m_particleSystem->setSimulationDomain(boxSize, make_uint3(dimension, dimension, dimension));
     clearRuntime();
-    m_simulationBoxSizeM = boxSize;
+    m_simulationBoxSizeWorld = boxSize;
+    m_baseVoxelGrid.metersPerWorldUnit = AtomicInitialization::kMicrometerToMeter;
+    m_fieldVoxelGrid.metersPerWorldUnit = AtomicInitialization::kMicrometerToMeter;
     m_baseVoxelGrid.dimensions = ivec3(8);
     m_baseVoxelGrid.origin = vec3(-boxSize * 0.5f);
     m_baseVoxelGrid.voxelEdgeM = boxSize / 8.0f;
@@ -148,9 +156,26 @@ void AtomicParticlesSimWorkspace::update(
     updateFieldDebug(frame, services);
     if (!m_runtimeEnabled || m_paused) return;
 
-    m_particleSystem->update(frame.deltaTime);
-
-    m_elapsedSimulationTime += frame.deltaTime;
+    if (!m_fieldSystem || !m_fieldSystem->initialized()) {
+        m_paused = true; m_debugNotice = "Physics paused: CUDA fields unavailable"; m_debugNoticeSeconds = 5;
+        return;
+    }
+    if (!m_activeMarkerCount) { m_elapsedSimulationTime += double(frame.deltaTime)*kPhysicalSecondsPerWallSecond; return; }
+    const double elapsed = double(frame.deltaTime) * kPhysicalSecondsPerWallSecond;
+    if (!std::isfinite(elapsed) || elapsed <= 0) return;
+    if (elapsed > 64*kMaxPhysicsStepSeconds) { m_paused = true; m_debugNotice = "Physics paused: frame exceeds substep budget"; m_debugNoticeSeconds = 5; return; }
+    const unsigned steps = static_cast<unsigned>(std::ceil(elapsed / kMaxPhysicsStepSeconds));
+    const float dt = static_cast<float>(elapsed / steps);
+    for (unsigned step = 0; step < steps; ++step) {
+        if (!m_particleSystem->updateMultiphysics(dt,*m_fieldSystem,ElectrostaticMode::GridField,m_elapsedSimulationTime)) {
+            m_paused = true; m_debugNotice = "Physics paused: field/particle step failed"; m_debugNoticeSeconds = 5;
+            return;
+        }
+        m_elapsedSimulationTime += dt;
+    }
+    // Existing CPU mirrors are display/readback only; GPU fields own the physics.
+    m_fieldMirrorReady = true;
+    if (selectedVectorField() || selectedScalarField()) refreshDiagnosticFields();
 }
 
 void AtomicParticlesSimWorkspace::render(
@@ -175,13 +200,10 @@ void AtomicParticlesSimWorkspace::render(
             renderActivePlasmaMarkers(services);
             renderFieldDebug(services);
         }
-        if (m_layer2Selection == Layer2Row::VoxelSpawn) {
-            renderSelectedSpawnRegion(services);
-        }
         return;
 
     case TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE:
-        renderConfiguredGrid(services, m_runtimeConfig.gridLayout);
+        renderConfiguredGrid(services, m_runtimeConfig.initialConditions.gridLayout);
         renderActivePlasmaMarkers(services);
         renderFieldDebug(services);
         return;
@@ -257,47 +279,21 @@ void AtomicParticlesSimWorkspace::renderActivePlasmaMarkers(WorkspaceServices& s
     );
 }
 
-bool AtomicParticlesSimWorkspace::resolveRuntimeConfig(RuntimeConfig& resolved) const {
-    if (m_draftConfig.gridLayout == GridLayout::Dynamic)
+bool AtomicParticlesSimWorkspace::resolveRuntimeConfig(RuntimeConfig& resolved, string& error) const {
+    resolved = {};
+    if (m_draftConfig.gridLayout == GridLayout::Dynamic ||
+        m_draftConfig.simulationBoundary != SimulationBoundary::Closed ||
+        m_draftConfig.initialMaterialPhase != InitialMaterialPhase::Gas) {
+        error = "INITIAL MATERIAL/BOUNDARY CONFIGURATION UNAVAILABLE";
         return false;
-
-    if (m_draftConfig.simulationBoundary != SimulationBoundary::Closed)
+    }
+    if (!AtomicInitialization::resolve(m_draftConfig.densityType,
+        m_draftConfig.densityMantissa, m_draftConfig.densityExponent,
+        m_draftConfig.ionizationFraction, m_simulationBoxSizeWorld, resolved, error))
         return false;
-
-    if (m_draftConfig.spawnSelectionIndex >=
-        m_spawnDensityGrid.selectionCount(m_baseVoxelGrid))
-        return false;
-
-    const unsigned int ions = ionCount();
-    const unsigned int neutrals = neutralCount();
-    const unsigned int electrons = electronCount();
-
-    const unsigned long long markerCount =
-        static_cast<unsigned long long>(neutrals) +
-        static_cast<unsigned long long>(ions) +
-        static_cast<unsigned long long>(electrons);
-
-    if (markerCount > kParticleCapacity) return false;
-
-    resolved.particleSpecies = m_draftConfig.particleSpecies;
-    resolved.totalGasCount = m_draftConfig.totalGasDensity;
-
-    resolved.neutralCount = neutrals;
-    resolved.ionCount = ions;
-    resolved.electronCount = electrons;
-
-    resolved.activeMarkerCount =
-        static_cast<unsigned int>(markerCount);
-
-    resolved.ionizationFraction = m_draftConfig.ionizationFraction;
-    resolved.electronTemperatureEv = m_draftConfig.electronTemperature;
-    resolved.ionTemperatureEv = m_draftConfig.ionTemperature;
-    resolved.neutralTemperatureK = m_draftConfig.neutralTemperature;
-    resolved.selectedSpawnSelectionIndex = m_draftConfig.spawnSelectionIndex;
-
+    resolved.initialConditions = m_draftConfig;
     resolved.speciesRadius = selectedSpeciesRenderRadius();
     resolved.placementRadius = std::max(resolved.speciesRadius, kElectronRadius);
-    resolved.gridLayout = m_draftConfig.gridLayout;
 
     return true;
 }
@@ -353,18 +349,20 @@ bool AtomicParticlesSimWorkspace::configureRuntimeVisuals() {
 
 bool AtomicParticlesSimWorkspace::runtimeMatchesDraft() const {
     // Compare values, not edit events: changing a value back should resume.
-    const auto sameFloat = [](float a, float b) {
-        return std::fabs(a - b) <= 1.0e-5f;
-    };
+    const auto& initial = m_runtimeConfig.initialConditions;
     return m_runtimeEnabled &&
-        m_runtimeConfig.particleSpecies == m_draftConfig.particleSpecies &&
-        m_runtimeConfig.totalGasCount == m_draftConfig.totalGasDensity &&
-        sameFloat(m_runtimeConfig.ionizationFraction, m_draftConfig.ionizationFraction) &&
-        sameFloat(m_runtimeConfig.electronTemperatureEv, m_draftConfig.electronTemperature) &&
-        sameFloat(m_runtimeConfig.ionTemperatureEv, m_draftConfig.ionTemperature) &&
-        sameFloat(m_runtimeConfig.neutralTemperatureK, m_draftConfig.neutralTemperature) &&
-        m_runtimeConfig.selectedSpawnSelectionIndex == m_draftConfig.spawnSelectionIndex &&
-        m_runtimeConfig.gridLayout == m_draftConfig.gridLayout;
+        initial.particleSpecies == m_draftConfig.particleSpecies &&
+        initial.densityType == m_draftConfig.densityType &&
+        initial.densityMantissa == m_draftConfig.densityMantissa &&
+        initial.densityExponent == m_draftConfig.densityExponent &&
+        initial.ionizationFraction == m_draftConfig.ionizationFraction &&
+        initial.electronTemperature == m_draftConfig.electronTemperature &&
+        initial.gasTemperature == m_draftConfig.gasTemperature &&
+        initial.gridLayout == m_draftConfig.gridLayout &&
+        initial.initialMaterialPhase == m_draftConfig.initialMaterialPhase &&
+        initial.simulationBoundary == m_draftConfig.simulationBoundary &&
+        initial.simSpaceMedium == m_draftConfig.simSpaceMedium &&
+        m_runtimeConfig.physicalVolumeM3 == AtomicInitialization::physicalVolumeM3(m_simulationBoxSizeWorld);
 }
 
 void AtomicParticlesSimWorkspace::clearRuntime() {
@@ -380,25 +378,26 @@ void AtomicParticlesSimWorkspace::clearRuntime() {
 }
 
 bool AtomicParticlesSimWorkspace::applyRuntimeConfig() {
+    m_statusLine = "PARTICLE INITIALIZATION FAILED";
     if (!m_particleSystem) return false;
 
     RuntimeConfig resolved;
 
-    if (!resolveRuntimeConfig(resolved))
+    if (!resolveRuntimeConfig(resolved, m_statusLine))
         return false;
 
     SpawnDensityRegion3D spawnRegion;
 
-    if (!m_spawnDensityGrid.selection(
-        m_baseVoxelGrid,
-        resolved.selectedSpawnSelectionIndex,
-        spawnRegion))
+    if (!m_spawnDensityGrid.wholeDomainRegion(m_baseVoxelGrid, spawnRegion)) {
+        m_statusLine = "INVALID WHOLE-DOMAIN SPAWN REGION";
         return false;
+    }
 
     // Validation above preserves the paused preview on invalid draft settings.
     // Once buffers are mutated, do not expose a partially configured runtime.
     m_runtimeEnabled = false;
     m_activeMarkerCount = 0;
+    m_statusLine = "PARTICLE INITIALIZATION FAILED";
     if (!m_particleSystem->setActiveParticleCount(resolved.activeMarkerCount))
         return false;
 
@@ -409,12 +408,30 @@ bool AtomicParticlesSimWorkspace::applyRuntimeConfig() {
         resolved.placementRadius,
         kResetSeed)) return false;
 
-    resolved.selectedSpawnVolumeM3 = spawnRegion.volumeM3;
+    // spawnRegion uses world coordinates. SI volume was resolved separately.
     m_runtimeConfig = resolved;
 
     if (!configureRuntimeVisuals())
         return false;
 
+    constexpr double charge = 1.602176634e-19;
+    constexpr double electronMass = 9.1093837e-31;
+    const unsigned atomicNumber = resolved.initialConditions.particleSpecies == ParticleSpecies::Hydrogen ? 1u :
+        resolved.initialConditions.particleSpecies == ParticleSpecies::Helium ? 2u : 18u;
+    const double atomicMass = (atomicNumber == 1 ? 1.008 : atomicNumber == 2 ? 4.002602 : 39.948) * 1.66053906660e-27;
+    std::vector<ParticleFieldMarker> markers(resolved.activeMarkerCount);
+    for (unsigned i=0;i<markers.size();++i) {
+        auto& marker=markers[i];
+        const bool electron=i>=resolved.heavyCount;
+        const bool ion=!electron && i>=resolved.neutralCount;
+        marker.kind=electron ? ParticleKind::Electron : ParticleKind::Atomic;
+        marker.chargeC=static_cast<float>(electron ? -charge : ion ? charge : 0.0);
+        marker.chargeToMass=static_cast<float>(electron ? -charge/electronMass : ion ? charge/atomicMass : 0.0);
+        marker.atomicNumber=static_cast<uint16_t>(atomicNumber);
+        marker.atomicId=electron ? resolved.neutralCount+(i-resolved.heavyCount)+1 : i+1;
+        marker.chargeState=electron ? -1 : ion ? 1 : 0;
+    }
+    if (!m_particleSystem->setFieldMarkers(markers.data(),resolved.activeMarkerCount)) return false;
     m_activeMarkerCount = resolved.activeMarkerCount;
 
     return true;
@@ -486,6 +503,7 @@ bool AtomicParticlesSimWorkspace::handleLayer1Input(
 
             clearRuntime();
             m_layer2Selection = Layer2Row::ParticleSpecies;
+            m_densityEditingExponent = false;
             m_textEntry.cancel();
 
             m_statusLine = "READY: ATOMIC_PARTICLES workspace configuration.";
@@ -539,8 +557,8 @@ bool AtomicParticlesSimWorkspace::handleLayer2Input(
         return true;
 
     case WorkspaceInputAction::Activate:
-        if (m_layer2Selection == Layer2Row::TotalGasDensity) {
-            beginGasDensityEntry();
+        if (m_layer2Selection == Layer2Row::Density) {
+            beginDensityEntry();
             return true;
         }
 
@@ -568,7 +586,6 @@ bool AtomicParticlesSimWorkspace::handleLayer2Input(
                 );
             }
             else {
-                m_statusLine = "PLASMA RUNTIME CONFIGURATION INVALID";
                 m_statusTone = WorkspaceStatusTone::Warning;
             }
 
@@ -665,7 +682,7 @@ void AtomicParticlesSimWorkspace::renderConfiguredGrid(
     );
     
     grid.origin = m_baseVoxelGrid.origin;
-    grid.cellSize = vec3(m_simulationBoxSizeM) / vec3(grid.dimensions);
+    grid.cellSize = vec3(m_simulationBoxSizeWorld) / vec3(grid.dimensions);
     grid.majorEvery = services.renderer->getGridMajorEvery();
 
     EuclidRenderer::GridDisplay display;
@@ -678,52 +695,31 @@ void AtomicParticlesSimWorkspace::renderConfiguredGrid(
     services.renderer->drawUniformGrid(grid, display);
 }
 
-void AtomicParticlesSimWorkspace::renderSelectedSpawnRegion(WorkspaceServices& services) const {
-    if (!services.renderer) return;
-
-    SpawnDensityRegion3D selectedRegion;
-    if (!m_spawnDensityGrid.selection(
-        m_baseVoxelGrid,
-        m_draftConfig.spawnSelectionIndex,
-        selectedRegion)) {
-
-        return;
-    }
-
-    // Whole-domain preview has no 2x2x2 constituent geometry.
-    if (m_draftConfig.spawnSelectionIndex == 0) {
-        services.renderer->drawHighlightedVoxel(selectedRegion.center, selectedRegion.halfExtent, 4.0f);
-        return;
-    }
-
-    // Draw each constituent base voxel so the 2x2x2 physical subdivision
-    // remains visible, then reinforce the continuous composite boundary.
-    for (const SpatialVoxelRegion& baseVoxel :
-        selectedRegion.constituentBaseVoxels) {
-        services.renderer->drawHighlightedVoxel(
-            baseVoxel.center,
-            baseVoxel.halfExtent,
-            2.0f
-        );
-    }
-
-    services.renderer->drawHighlightedVoxel(
-        selectedRegion.center,
-        selectedRegion.halfExtent,
-        4.0f
-    );
+bool AtomicParticlesSimWorkspace::textEntryActive() const {
+    return m_active && m_arbiter &&
+        m_arbiter->getApplicationLayer() == TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION &&
+        m_textEntry.isActive();
 }
 
-void AtomicParticlesSimWorkspace::beginGasDensityEntry() {
-    if (m_textEntry.beginUnsignedInteger(
-        "TOTAL GAS DESNITY",
-        0,
-        kParticleCapacity,
-        m_draftConfig.totalGasDensity)) {
-
-        m_statusLine = "ENTER TOTAL GAS DENSITY; E/Enter commits.";
+void AtomicParticlesSimWorkspace::beginDensityEntry() {
+    const bool began = m_densityEditingExponent
+        ? m_textEntry.beginSignedInteger("DENSITY EXPONENT", AtomicInitialization::kMinimumExponent,
+            AtomicInitialization::kMaximumExponent, m_draftConfig.densityExponent)
+        : m_textEntry.beginNonnegativeReal("DENSITY MANTISSA", m_draftConfig.densityMantissa);
+    if (began) {
+        m_statusLine = "ENTER DENSITY; E/Enter commits; Q/Escape cancels.";
         m_statusTone = WorkspaceStatusTone::Neutral;
     }
+}
+
+string AtomicParticlesSimWorkspace::densityNotation() const {
+    string mantissa = TextEntrySession::formatReal(m_draftConfig.densityMantissa);
+    string exponent = to_string(m_draftConfig.densityExponent);
+    if (m_layer2Selection == Layer2Row::Density) {
+        string& target = m_densityEditingExponent ? exponent : mantissa;
+        target = m_textEntry.isActive() ? ":=" + m_textEntry.getBuffer() : "=" + target;
+    }
+    return "{" + mantissa + "}E{" + exponent + "} /m^3";
 }
 
 WorkspacePresentation
@@ -787,9 +783,10 @@ AtomicParticlesSimWorkspace::buildLayer2Presentation() const {
 
     p.panelVisible = true;
     p.workspaceName = "LAYER 2 -> MULTIPHYSICS_SIM CONFIGURATION";
-    p.layerLabel = "MODE: MULTIPHYSICS_SIM";
+    p.layerLabel = "MODE: ATOMIC_PARTICLES";
 
     WorkspacePanelSection section;
+    section.heading = "--- INITIAL CONDITION SETUP ---";
 
     section.rows.push_back(makeRow(
         "[1]: PARTICLE SPECIES",
@@ -797,23 +794,12 @@ AtomicParticlesSimWorkspace::buildLayer2Presentation() const {
         m_layer2Selection == Layer2Row::ParticleSpecies
     ));
 
-    // Density row supports interactive text entry
-    if (m_textEntry.isActive() && m_layer2Selection ==
-        Layer2Row::TotalGasDensity) {
-
-        section.rows.push_back(makeRow(
-            "[2]: TOTAL GAS DENSITY",
-            ":=" + m_textEntry.getBuffer() + "m⁻³",
-            true
-        ));
-    }
-    else {
-        section.rows.push_back(makeRow(
-            "[2]: TOTAL GAS DENSITY",
-            to_string(m_draftConfig.totalGasDensity) + "m^{-3}",
-            m_layer2Selection == Layer2Row::TotalGasDensity
-        ));
-    }
+    section.rows.push_back(makeRow("[2]: DENSITY TYPE",
+        AtomicInitialization::densityTypeName(m_draftConfig.densityType),
+        m_layer2Selection == Layer2Row::DensityType));
+    auto densityRow = makeRow("[3]: DENSITY N", densityNotation(), m_layer2Selection == Layer2Row::Density);
+    densityRow.valueHasDelimiters = true;
+    section.rows.push_back(densityRow);
 
     {
         ostringstream value;
@@ -823,38 +809,26 @@ AtomicParticlesSimWorkspace::buildLayer2Presentation() const {
             << m_draftConfig.ionizationFraction;
 
         section.rows.push_back(makeRow(
-            "[3]: IONIZATION",
+            "[4]: INIT. IONIZATION",
             value.str(),
             m_layer2Selection == Layer2Row::IonizationFraction
         ));
     }
 
     section.rows.push_back(makeRow(
-        "[4]: ELECTRON TEMP",
-        to_string(m_draftConfig.electronTemperature) + "eV",
+        "[5]: INIT. ELECTRON TEMP",
+        TextEntrySession::formatReal(m_draftConfig.electronTemperature) + " eV",
         m_layer2Selection == Layer2Row::ElectronTemperature
     ));
 
     section.rows.push_back(makeRow(
-        "[5]: ION TEMP",
-        to_string(m_draftConfig.ionTemperature) + "eV",
-        m_layer2Selection == Layer2Row::IonTemperature
+        "[6]: GAS INPUT",
+        TextEntrySession::formatReal(m_draftConfig.gasTemperature) + " K",
+        m_layer2Selection == Layer2Row::GasInput
     ));
 
     section.rows.push_back(makeRow(
-        "[6]: NEUTRAL TEMP",
-        to_string(m_draftConfig.neutralTemperature) + " K",
-        m_layer2Selection == Layer2Row::NeutralTemperature
-    ));
-
-    section.rows.push_back(makeRow(
-        "[7]: SELECT VOXEL SPAWN",
-        spawnSelectionText(m_draftConfig.spawnSelectionIndex),
-        m_layer2Selection == Layer2Row::VoxelSpawn
-    ));
-
-    section.rows.push_back(makeRow(
-        "[8]: PRESS E TO RUN SIM",
+        "[7]: PRESS E TO RUN SIM",
         "",
         m_layer2Selection == Layer2Row::RunSimulation
     ));
@@ -866,31 +840,25 @@ AtomicParticlesSimWorkspace::buildLayer2Presentation() const {
         p.statusTone = m_statusTone;
     }
 
-    // Plasma population summary
-    p.postStatusLines.push_back(
-        "NEUTRAL " + string(particleSpeciesName()) +
-        ": " + to_string(neutralCount())
-    );
-
-    p.postStatusLines.push_back(
-        "IONIZED " + string(particleSpeciesName()) +
-        ": " + to_string(ionCount())
-    );
-
-    p.postStatusLines.push_back("FREE ELECTRONS: " + to_string(electronCount()));
-    p.postStatusLines.push_back("--------------------");
-    p.postStatusLines.push_back(
-        string(particleSpeciesName()) + " TOTAL: " +
-        to_string(m_draftConfig.totalGasDensity)
-    );
-
-    p.postStatusLines.push_back(
-        "SIM MARKERS: " + to_string(requestedMarkerCount()) +
-        "/" + to_string(kParticleCapacity)
-    );
-
-    p.footerLine1 = "W/S: Select row    A/D: Change value    E: Activate / Enter";
-    p.footerLine2 = "Q: Return to Layer 1    ESC: Exit";
+    RuntimeConfig preview;
+    string error;
+    if (resolveRuntimeConfig(preview, error)) {
+        p.postStatusLines = {
+            "NEUTRAL " + string(particleSpeciesName()) + ": " + to_string(preview.neutralCount),
+            "IONIZED " + string(particleSpeciesName()) + ": " + to_string(preview.ionCount),
+            "FREE ELECTRONS: " + to_string(preview.electronCount),
+            "--------------------",
+            string(particleSpeciesName()) + " TOTAL: " + to_string(preview.heavyCount) + " / " + to_string(AtomicInitialization::kHeavyParticleLimit),
+            "SIM MARKERS: " + to_string(preview.activeMarkerCount) + " / " + to_string(kParticleCapacity),
+            "FREE SLOTS: " + to_string(kParticleCapacity - preview.activeMarkerCount)
+        };
+    } else {
+        p.statusLine = error;
+        p.statusTone = WorkspaceStatusTone::Warning;
+    }
+    p.footerLine1 = "W/S: Row   A/D: Value or density field   E/Enter: Edit / Run";
+    p.footerLine2 = m_textEntry.isActive() ? "Typing replaces initial value; Backspace: Delete; Q/ESC: Cancel"
+        : "Q: Return to Layer 1    ESC: Exit";
 
     return p;
 }
@@ -1042,54 +1010,44 @@ void AtomicParticlesSimWorkspace::adjustLayer2Value(int direction) {
             );
         break;
     }
+    case Layer2Row::DensityType: {
+        const int count = static_cast<int>(DensityType::Count);
+        const int current = static_cast<int>(m_draftConfig.densityType);
+        m_draftConfig.densityType = static_cast<DensityType>((current + step + count) % count);
+        break;
+    }
+    case Layer2Row::Density:
+        m_densityEditingExponent = direction > 0;
+        break;
     case Layer2Row::IonizationFraction:
         m_draftConfig.ionizationFraction = std::clamp(
-            m_draftConfig.ionizationFraction + static_cast<float>(step) * 0.01f,
-            0.0f,
-            1.0f
+            (std::round(m_draftConfig.ionizationFraction * 100.0) + step) / 100.0,
+            0.0,
+            1.0
         );
         break;
 
     case Layer2Row::ElectronTemperature:
         m_draftConfig.electronTemperature = std::max(
-            0.0f,
-            m_draftConfig.electronTemperature + step * 0.1f
+            0.0,
+            (std::round(m_draftConfig.electronTemperature * 10.0) + step) / 10.0
         );
         break;
 
-    case Layer2Row::IonTemperature:
-        m_draftConfig.ionTemperature = std::max(
-            0.0f,
-            m_draftConfig.ionTemperature + step * 0.1f
+    case Layer2Row::GasInput:
+        m_draftConfig.gasTemperature = std::max(
+            0.0,
+            (std::round(m_draftConfig.gasTemperature * 10.0) + step) / 10.0
         );
         break;
-
-    case Layer2Row::NeutralTemperature:
-        m_draftConfig.neutralTemperature = std::max(
-            0.0f,
-            m_draftConfig.neutralTemperature + step * 0.1f
-        );
-        break;
-
-    case Layer2Row::VoxelSpawn: {
-
-        const unsigned int count =
-            m_spawnDensityGrid.selectionCount(m_baseVoxelGrid);
-
-        if (count == 0) break;
-        const int current = static_cast<int>(m_draftConfig.spawnSelectionIndex);
-
-        m_draftConfig.spawnSelectionIndex = static_cast<unsigned int>(
-            (current + step + static_cast<int>(count)) % static_cast<int>(count)
-            );
-        break;
-    }
 
     case Layer2Row::RunSimulation:
     case Layer2Row::Count:
     default:
         return;
     }
+    m_statusLine = "READY: INITIAL CONDITIONS UPDATED.";
+    m_statusTone = WorkspaceStatusTone::Ready;
 }
 
 void AtomicParticlesSimWorkspace::refreshLayer1Status() {
@@ -1124,33 +1082,34 @@ bool AtomicParticlesSimWorkspace::handleLayer2TextEntry(const WorkspaceInputEven
         input.rawKey == 'q' || input.rawKey == 'Q') {
 
         m_textEntry.cancel();
-        m_statusLine = "TOTAL GAS DENSITY entry cancelled.";
+        m_statusLine = "DENSITY entry cancelled.";
         m_statusTone = WorkspaceStatusTone::Neutral;
 
         return true;
     }
 
-    const TextEntryAction action = m_textEntry.handleRawKey(input.rawKey);
+    const bool commit = input.action == WorkspaceInputAction::Activate || input.rawKey == 'e' || input.rawKey == 'E';
+    const TextEntryAction action = m_textEntry.handleRawKey(commit ? 13 : input.rawKey);
 
     switch (action) {
 
     case TextEntryAction::Committed: {
-        unsigned int value = 0;
-
-        if (m_textEntry.tryGetCommittedUnsigned(value)) {
-            m_draftConfig.totalGasDensity = value;
-            m_statusLine = "READY: TOTAL GAS DENSITY committed.";
+        const bool committed = m_densityEditingExponent
+            ? m_textEntry.tryGetCommittedSigned(m_draftConfig.densityExponent)
+            : m_textEntry.tryGetCommittedReal(m_draftConfig.densityMantissa);
+        if (committed) {
+            m_statusLine = "READY: DENSITY committed.";
             m_statusTone = WorkspaceStatusTone::Ready;
         }
         else {
-            m_statusLine = "TOTAL GAS DENSITY was not committed.";
+            m_statusLine = "DENSITY was not committed.";
             m_statusTone = WorkspaceStatusTone::Warning;
         }
 
         break;
     }
     case TextEntryAction::Cancelled:
-        m_statusLine = "TOTAL GAS DENSITY entry cancelled.";
+        m_statusLine = "DENSITY entry cancelled.";
         m_statusTone = WorkspaceStatusTone::Neutral;
         break;
 
@@ -1161,7 +1120,7 @@ bool AtomicParticlesSimWorkspace::handleLayer2TextEntry(const WorkspaceInputEven
         break;
 
     case TextEntryAction::Changed:
-        m_statusLine = "ENTER TOTAL GAS DENSITY; E/ENTER commits.";
+        m_statusLine = "ENTER DENSITY; E/Enter commits; Q/Escape cancels.";
         m_statusTone = WorkspaceStatusTone::Neutral;
         break;
 
@@ -1171,48 +1130,6 @@ bool AtomicParticlesSimWorkspace::handleLayer2TextEntry(const WorkspaceInputEven
     }
 
     return true;
-}
-
-unsigned int AtomicParticlesSimWorkspace::ionCount() const {
-    const float value = static_cast<float>(m_draftConfig.totalGasDensity) *
-        m_draftConfig.ionizationFraction;
-
-    return static_cast<unsigned int>(round(value));
-}
-
-unsigned int AtomicParticlesSimWorkspace::neutralCount() const {
-    return m_draftConfig.totalGasDensity - ionCount();
-}
-
-unsigned int AtomicParticlesSimWorkspace::electronCount() const {
-    return ionCount();
-}
-
-unsigned int AtomicParticlesSimWorkspace::requestedMarkerCount() const {
-    return neutralCount() + ionCount() + electronCount();
-}
-
-string AtomicParticlesSimWorkspace::spawnSelectionText(
-    unsigned int selectionIndex) const {
-    // Presentation label only: existing world-space units remain unchanged.
-    if (selectionIndex == 0)
-        return "[" + std::to_string(static_cast<int>(m_simulationBoxSizeM)) + " MICRO METER]^3";
-    if (selectionIndex == 1) {
-        return "VOXEL_CENTER";
-    }
-
-    const unsigned int voxelId =
-        selectionIndex - 2;
-
-    ostringstream stream;
-
-    stream
-        << "VOXEL_"
-        << setw(3)
-        << setfill('0')
-        << voxelId;
-
-    return stream.str();
 }
 
 float AtomicParticlesSimWorkspace::selectedSpeciesRenderRadius() const {

@@ -123,51 +123,33 @@ void clearVectorFieldD(
 	if (i < count)
 		field[i] = make_float4(0, 0, 0, 0);
 }
-// Grounded Dirichlet faces; general dx/dy/dz stencil in SI units.
-__global__
-void jacobiPoissonD(
-	const float* rho,
-	const float* oldPhi,
-	float* newPhi) {
-
-	const uint i = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if (i >= cFieldGrid.cellCount)
-		return;
-
-	const uint3 d = cFieldGrid.dimensions;
-
-	const uint x = i % d.x;
-	const uint y = (i / d.x) % d.y;
-	const uint z = i / (d.x * d.y);
-
-	if (x == 0 || y == 0 || z == 0 ||
-		x + 1 == d.x ||
-		y + 1 == d.y ||
-		z + 1 == d.z) {
-
-		newPhi[i] = 0.0f;
-		return;
-	}
-
-	const float3 h = cFieldGrid.cellSize;
-
-	const double ax = 1.0 / (double(h.x) * h.x);
-	const double ay = 1.0 / (double(h.y) * h.y);
-	const double az = 1.0 / (double(h.z) * h.z);
-
-	constexpr double epsilon0 = EPSILON;
-
-	newPhi[i] =
-		static_cast<float>((ax * (double(oldPhi[i - 1]) + oldPhi[i + 1]) +
-			ay * (double(oldPhi[i - d.x]) + oldPhi[i + d.x]) +
-			az * (double(oldPhi[i - d.x * d.y]) + oldPhi[i + d.x * d.y]) + rho[i] / epsilon0) /
-			(2.0 * (ax + ay + az)));
+// Cell-centered finite-volume Jacobi: grounded physical faces, vacuum SI units.
+__global__ void jacobiPoissonD(const float* rho,const float* oldPhi,float* newPhi) {
+    const unsigned i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i>=cFieldGrid.cellCount) return;
+    const uint3 d=cFieldGrid.dimensions;
+    const unsigned coord[3]={i%d.x,(i/d.x)%d.y,i/(d.x*d.y)};
+    const unsigned dims[3]={d.x,d.y,d.z}, stride[3]={1,d.x,d.x*d.y};
+    const double h[3]={cFieldGrid.cellSize.x*cFieldGrid.metersPerWorldUnit,
+        cFieldGrid.cellSize.y*cFieldGrid.metersPerWorldUnit,cFieldGrid.cellSize.z*cFieldGrid.metersPerWorldUnit};
+    double numerator=double(rho[i])/kVacuumEpsilon0,denominator=0;
+    for(int a=0;a<3;++a) {
+        const double w=1.0/(h[a]*h[a]);
+        if(coord[a]>0) {numerator+=w*oldPhi[i-stride[a]];denominator+=w;} else denominator+=2*w;
+        if(coord[a]+1<dims[a]) {numerator+=w*oldPhi[i+stride[a]];denominator+=w;} else denominator+=2*w;
+    }
+    newPhi[i]=float(numerator/denominator);
+}
+__device__ float groundedDerivative(const float* phi,unsigned i,unsigned c,unsigned n,unsigned stride,float h) {
+    if(n==1) return 0;
+    if(c==0) return float((double(phi[i])+double(phi[i+stride])/3.0)/h);
+    if(c+1==n) return float(-(double(phi[i])+double(phi[i-stride])/3.0)/h);
+    return float((double(phi[i+stride])-phi[i-stride])/(2.0*h));
 }
 __global__
 void electricFieldFromPotentialD(
 	const float* phi,
-	float4* electric) {
+	float4* electric, bool groundedFaces) {
 
 	const uint i = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -181,9 +163,9 @@ void electricFieldFromPotentialD(
 	const float3 h = cFieldGrid.cellSize;
 
 	electric[i] = make_float4(
-		-fieldDerivative(phi, i, x, d.x, 1, h.x),
-		-fieldDerivative(phi, i, y, d.y, d.x, h.y),
-		-fieldDerivative(phi, i, z, d.z, d.x * d.y, h.z),
+		float(-double(groundedFaces ? groundedDerivative(phi, i, x, d.x, 1, h.x) : fieldDerivative(phi, i, x, d.x, 1, h.x))/cFieldGrid.metersPerWorldUnit),
+		float(-double(groundedFaces ? groundedDerivative(phi, i, y, d.y, d.x, h.y) : fieldDerivative(phi, i, y, d.y, d.x, h.y))/cFieldGrid.metersPerWorldUnit),
+		float(-double(groundedFaces ? groundedDerivative(phi, i, z, d.z, d.x * d.y, h.z) : fieldDerivative(phi, i, z, d.z, d.x * d.y, h.z))/cFieldGrid.metersPerWorldUnit),
 		0.0f
 	);
 }
@@ -207,7 +189,7 @@ void addAnalyticWaveD(
 		double(k.y) * r.y + double(k.z) * r.z;
 
 	const double phase = K1 * double(wave.frequencyHz) *
-		(distance / K2 - time) + wave.phaseRad;
+		(distance * cFieldGrid.metersPerWorldUnit / K2 - time) + wave.phaseRad;
 
 	const float3 e = wave.polarization *
 		static_cast<float>(wave.amplitudeVm * cos(phase));
@@ -233,21 +215,20 @@ void lorentzAccelerationD(
 		return;
 
 	const auto marker = markers[i];
-	acceleration[i] = make_float4(0, 0, 0, 0);
+
 
 	if (marker.kind == ParticleKind::Inactive ||
-		marker.chargeToMass == 0)
+		marker.chargeC == 0 || marker.chargeToMass == 0)
 		return;
 
 	const float3 p = make_float3(positions[i]);
-	const float3 v = make_float3(velocities[i]);
+	const float3 v = scaled3(make_float3(velocities[i]), cFieldGrid.metersPerWorldUnit);
 
 	const float3 e = sampleFieldVector(electric, p);
 	const float3 b = sampleFieldVector(magnetic, p);
 
-	// Output replaces EM acceleration only. Integrator/composition is caller-owned.
-	acceleration[i] =
-		make_float4((e + cross(v, b)) * marker.chargeToMass, 0);
+	// SI acceleration is additive; sampling happens once for the composed E/B.
+	addAcceleration(acceleration, i, (e + cross(v, b)) * marker.chargeToMass);
 }
 __global__
 void buildElectricGlyphsD(
@@ -436,6 +417,7 @@ __device__
 float3 sampleFieldVector(
 	const float4* field,
 	float3 p) {
+	if (!field || !finite3(p)) return make_float3(nanf(""));
 	const uint3 d = cFieldGrid.dimensions;
 	const float3 coordinate =
 		(p - cFieldGrid.origin) / cFieldGrid.cellSize -
@@ -508,4 +490,37 @@ bool fieldGlyphSample(
 ///-----------------------------------------------------------------------------------------
 /// </FIELD SYSTEM DEVICE FUNCTIONS>
 ///-----------------------------------------------------------------------------------------
+
+// Same cell-centered clamped CIC convention as sampleFieldVector.
+__global__ void depositChargeCurrentD(const float4* pos,const float4* vel,
+    const ParticleFieldMarker* markers,float* rho,float4* current,unsigned count) {
+    const unsigned i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i>=count||markers[i].kind==ParticleKind::Inactive||markers[i].chargeC==0) return;
+    if(!finite3(make_float3(pos[i]))||!finite3(make_float3(vel[i]))||!isfinite(markers[i].chargeC)) return;
+    const uint3 d=cFieldGrid.dimensions;
+    const float3 coordinate=(make_float3(pos[i])-cFieldGrid.origin)/cFieldGrid.cellSize-make_float3(0.5f);
+    const float3 u=make_float3(fminf(fmaxf(coordinate.x,0),float(d.x-1)),
+        fminf(fmaxf(coordinate.y,0),float(d.y-1)),fminf(fmaxf(coordinate.z,0),float(d.z-1)));
+    const uint3 lo=make_uint3(unsigned(floorf(u.x)),unsigned(floorf(u.y)),unsigned(floorf(u.z)));
+    const uint3 hi=make_uint3(min(lo.x+1,d.x-1),min(lo.y+1,d.y-1),min(lo.z+1,d.z-1));
+    const float3 f=u-make_float3(float(lo.x),float(lo.y),float(lo.z));
+    const double scale=cFieldGrid.metersPerWorldUnit;
+    const double volume=(double(cFieldGrid.cellSize.x)*scale)*(double(cFieldGrid.cellSize.y)*scale)*(double(cFieldGrid.cellSize.z)*scale);
+    for(unsigned z=0;z<2;++z) for(unsigned y=0;y<2;++y) for(unsigned x=0;x<2;++x) {
+        const double w=(x?f.x:1-f.x)*(y?f.y:1-f.y)*(z?f.z:1-f.z);
+        if(w==0) continue;
+        const unsigned cell=fieldIndex(x?hi.x:lo.x,y?hi.y:lo.y,z?hi.z:lo.z,d);
+        const double density=w*double(markers[i].chargeC)/volume;
+        atomicAdd(rho+cell,float(density));
+        atomicAdd(&current[cell].x,float(density*double(vel[i].x)*scale));
+        atomicAdd(&current[cell].y,float(density*double(vel[i].y)*scale));
+        atomicAdd(&current[cell].z,float(density*double(vel[i].z)*scale));
+    }
+}
+__global__ void addUniformFieldD(float4* e,float4* b,UniformEMField source) {
+    const unsigned i=blockIdx.x*blockDim.x+threadIdx.x;
+    if(i>=cFieldGrid.cellCount||!source.enabled) return;
+    e[i]=make_float4(make_float3(e[i])+source.electricVm,0);
+    b[i]=make_float4(make_float3(b[i])+source.magneticT,0);
+}
 #endif

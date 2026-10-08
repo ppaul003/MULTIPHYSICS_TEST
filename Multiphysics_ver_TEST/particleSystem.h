@@ -8,6 +8,8 @@
 #include <vector_functions.h>
 
 #include "paramsEM_kernel.cuh"
+#include "particleFieldType.h"
+class FieldSystem;
 
 struct ParticleProxy3D {
 	float4 position;
@@ -86,7 +88,11 @@ public:
 	void dumpRadii(float* rad, uint count);
 	void dumpParticles(uint start, uint count);
 	
-	void update(float deltaTime);
+    void update(float deltaTime);
+    bool updateMultiphysics(float deltaTime, FieldSystem& fields, ElectrostaticMode mode, double timeSeconds);
+    bool setFieldMarkers(const ParticleFieldMarker* markers, unsigned count);
+    bool setMetersPerWorldUnit(double scale);
+    double metersPerWorldUnit() const { return m_params.metersPerWorldUnit; }
 	void reset(ParticleConfig config);
 	void setDefaultColorRamp();
 
@@ -146,6 +152,7 @@ protected:
 	
 	uint createVBO(uint size);
 	
+    bool updateInternal(float dt, FieldSystem* fields, ElectrostaticMode mode, double timeSeconds);
 	void _initialize(uint numParticles);
 	void _finalize();
 	void initGrid(uint* size, float spacing, float jitter, uint numParticles);
@@ -186,6 +193,7 @@ protected:
 	float* m_dPos;
 	float* m_dVel;
 	float* m_dAcc;
+    ParticleFieldMarker* m_dMarkers = nullptr;
 	float* m_dSortedPos;
 	float* m_dSortedVel;
 	float* m_cudaPosVBO;

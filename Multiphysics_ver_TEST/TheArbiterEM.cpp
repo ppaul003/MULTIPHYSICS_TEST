@@ -3,11 +3,17 @@
 TheArbiter::TheArbiter() = default;
 
 TheArbiter::ArbiterResult
-TheArbiter::routeKeyboard(const KeyboardInput::KeyEvent& event) const {
+TheArbiter::routeKeyboard(const KeyboardInput::KeyEvent& event, bool textEntryActive) const {
     ArbiterResult result;
     result.workspaceInput.rawKey = event.rawKey;
     result.workspaceInput.x = event.x;
     result.workspaceInput.y = event.y;
+
+    if (textEntryActive) {
+        result.handled = result.hasWorkspaceInput = true;
+        result.workspaceInput.action = WorkspaceInputAction::RawKey;
+        return result;
+    }
 
     if (event.signal == KeyboardInput::KEY_ESCAPE) {
         result.handled = true;

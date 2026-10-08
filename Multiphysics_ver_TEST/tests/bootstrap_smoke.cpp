@@ -208,6 +208,57 @@ int main(int argc, char** argv) {
             try { particles.setSimulationDomain(16.0f, make_uint3(96, 96, 96)); }
             catch (const std::invalid_argument&) { rejected = true; }
             require(rejected && particles.getGridSize().x == 128, "Non-power-of-two grid rejected without mutation");
+            particles.setActiveParticleCount(16);
+            for (int box : {4,8,16,32}) {
+                SpatialVoxelGrid3D worldGrid;
+                worldGrid.dimensions=glm::ivec3(8);
+                worldGrid.origin=glm::vec3(-box*.5f);
+                worldGrid.voxelEdgeM=box/8.0f;
+                SpawnDensityRegionGrid3D regions;
+                SpawnDensityRegion3D whole;
+                require(regions.wholeDomainRegion(worldGrid,whole) && whole.minimum==glm::vec3(-box*.5f) &&
+                    whole.maximum==glm::vec3(box*.5f),"Whole-domain helper covers exact world bounds");
+                const uint dim=static_cast<uint>(findSimulationPreset(box)->collisionGridDim);
+                particles.setSimulationDomain(float(box),make_uint3(dim,dim,dim));
+                require(particles.resetInBounds(ParticleSystem::CNFG_RANDOM_RESTART,
+                    make_float3(whole.minimum.x,whole.minimum.y,whole.minimum.z),
+                    make_float3(whole.maximum.x,whole.maximum.y,whole.maximum.z),.0063f,1973),"Whole-domain GPU spawn");
+                const float* xyz=particles.getArray(ParticleSystem::POSITION);
+                float minimum[3]={0,0,0}, maximum[3]={0,0,0};
+                for (int i=0;i<16;++i) for (int axis=0;axis<3;++axis) {
+                    const float x=xyz[4*i+axis];
+                    require(std::isfinite(x) && x>=-box*.5f+.0063f && x<=box*.5f-.0063f,"GPU positions within whole box with radius margin");
+                    minimum[axis]=(std::min)(minimum[axis],x); maximum[axis]=(std::max)(maximum[axis],x);
+                }
+                for (int axis=0;axis<3;++axis)
+                    require(minimum[axis]<-box*.25f && maximum[axis]>box*.25f,"Spawn spans the box instead of a central voxel");
+            }
+            // Exercise the real ParticleSystem map -> fields -> force -> push -> unmap path.
+            particles.setActiveParticleCount(2);
+            require(particles.setMetersPerWorldUnit(1e-6),"Set particle SI geometry");
+            float positions[8]={-5,0,0,1,5,0,0,1};
+            float velocities[8]={0,0,0,0.0063f,0,0,0,0.0063f};
+            particles.setArray(ParticleSystem::POSITION,positions,0,2);
+            particles.setArray(ParticleSystem::VELOCITY,velocities,0,2);
+            ParticleFieldMarker markers[2]{};
+            for(auto& marker:markers) {
+                marker.kind=ParticleKind::Electron;marker.chargeC=-1.602176634e-19f;
+                marker.chargeToMass=static_cast<float>(-1.602176634e-19/9.1093837e-31);
+            }
+            require(particles.setFieldMarkers(markers,2),"Upload physical electron identity");
+            FieldGridParams fieldGrid{make_uint3(8,8,8),make_float3(-16,-16,-16),make_float3(4,4,4),512,1e-6};
+            FieldSystem physicalFields(fieldGrid,false);
+            require(particles.updateMultiphysics(1e-13f,physicalFields,ElectrostaticMode::GridField,0),"Actual coupled grid-field timestep");
+            const auto firstVelocity=particles.getSingleParticle(ParticleSystem::VELOCITY,0);
+            const auto secondVelocity=particles.getSingleParticle(ParticleSystem::VELOCITY,1);
+            require(std::isfinite(firstVelocity.x)&&firstVelocity.x<0&&secondVelocity.x>0,"Like electrons repel through production host wiring");
+            require(firstVelocity.w==0.0063f&&particles.getSingleParticle(ParticleSystem::POSITION,0).w==1,
+                "Coupled runtime preserves radius and position metadata");
+            require(particles.updateMultiphysics(1e-13f,physicalFields,ElectrostaticMode::GridField,1e-13),"Second coupled timestep");
+            const auto twiceVelocity=particles.getSingleParticle(ParticleSystem::VELOCITY,0);
+            require(std::abs(twiceVelocity.x/firstVelocity.x-2)<1e-3,"Accumulator reset prevents repeated force accumulation");
+            require(cudaDeviceSynchronize()==cudaSuccess,"Real particle-field GL interop completion");
+            std::puts("PASS: SI particle-field host wiring, repulsion, accumulator reset and interop");
             std::puts("PASS: CUDA cell reallocation, 16/32 table reuse, high-index collision access, VBO/radius/capacity preservation");
         }
         {
@@ -248,7 +299,7 @@ int main(int argc, char** argv) {
                 require(glGetError() == GL_NO_ERROR, "OpenGL render error");
             };
             auto key = [&](unsigned char raw) {
-                auto routed = arbiter.routeKeyboard(keyboard.onKey(raw, 0, 0));
+                auto routed = arbiter.routeKeyboard(keyboard.onKey(raw, 0, 0), host.textEntryActive());
                 require(routed.hasWorkspaceInput, "Keyboard routing");
                 host.handleInput(routed.workspaceInput);
                 host.handleInputRelease(routed.workspaceInput);
@@ -286,7 +337,8 @@ int main(int argc, char** argv) {
                     SpawnDensityRegionGrid3D spawnGrid;
                     SpawnDensityRegion3D region;
                     require(spawnGrid.centeredRegion(state.physicalGrid, region), "Center spawn region remains valid");
-                    require(region.volumeM3 == std::pow(box / 4.0f, 3.0f), "2x2x2 spawn volume follows physical geometry");
+                    require(std::abs(double(region.volumeM3) - std::pow(box / 4.0 * state.physicalGrid.metersPerWorldUnit, 3.0)) <
+                        std::pow(box / 4.0 * state.physicalGrid.metersPerWorldUnit, 3.0)*1e-6, "2x2x2 spawn volume follows physical geometry");
                     require(spawnGrid.regionCount(state.physicalGrid) == 64 &&
                         spawnGrid.selectionCount(state.physicalGrid) == 66, "Spawn selector includes whole domain, center and 64 physical regions");
                 }
@@ -503,30 +555,56 @@ int main(int argc, char** argv) {
                 require(host.menu().items.empty(), "Atomic runtime menu absent outside Layer 3");
                 selectRow("CONFIGURE WORKSPACE"); key('e');
                 require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION, "Configure Atomic");
-                selectRow("SELECT VOXEL SPAWN");
-                const std::string wholeDomain = "[" + std::to_string(renderer.getSimBoxSize()) + " MICRO METER]^3";
-                // Re-entry preserves the draft selection; explicitly select the start of the cycle.
-                for (int i = 0; i < 66 && value(6) != wholeDomain; ++i) key('d');
-                require(value(6) == wholeDomain, "Whole-domain spawn reachable at every field resolution");
-                key('d');
-                require(value(6) == "VOXEL_CENTER", "Centered spawn remains the next option");
-                key('d');
-                for (int id = 0; id < 64; ++id) {
-                    char expected[16];
-                    std::snprintf(expected, sizeof(expected), "VOXEL_%03d", id);
-                    require(value(6) == expected, "Existing voxel selection ordering remains unchanged");
-                    key('d');
-                }
-                require(value(6) == "[" + std::to_string(renderer.getSimBoxSize()) + " MICRO METER]^3",
-                    "Whole-domain option follows the 64 physical regions");
-                key('d');
-                require(value(6) == "VOXEL_CENTER", "Whole-domain option wraps back to center");
-                selectRow("TOTAL GAS DENSITY"); key('e');
-                for (unsigned char raw : std::string("1200")) key(raw);
-                key(13);
+                require(host.presentation().sections.at(0).rows.size() == 7 &&
+                    host.presentation().layerLabel == "MODE: ATOMIC_PARTICLES" &&
+                    host.presentation().sections.at(0).heading == "--- INITIAL CONDITION SETUP ---", "Seven physical initialization rows");
+                const std::array<const char*,7> labels = {"[1]: PARTICLE SPECIES", "[2]: DENSITY TYPE", "[3]: DENSITY N",
+                    "[4]: INIT. IONIZATION", "[5]: INIT. ELECTRON TEMP", "[6]: GAS INPUT", "[7]: PRESS E TO RUN SIM"};
+                for (size_t i=0; i<labels.size(); ++i)
+                    require(host.presentation().sections[0].rows[i].label == labels[i], "Layer-2 row order");
+                require(value(1)=="ELECTRON" && value(4)=="0 eV" && value(5)=="0 K", "Default density type and temperatures");
+                selectRow("DENSITY TYPE"); key('d'); require(value(1)=="NEUTRAL","Neutral type");
+                key('d'); require(value(1)=="ION","Ion type"); key('d'); require(value(1)=="ELECTRON","Type cycle");
+                selectRow("DENSITY N"); key('a'); key('e');
+                for (unsigned char raw : std::string("1.0")) key(raw);
+                require(value(2).find("{:=1.0}E{")==0,"Mantissa editing preserves decimal text");
+                key('e'); require(value(2).find("{=1}E{")==0,"E commits and normalizes mantissa");
+                key('d'); key(13); key('-'); key('3');
+                require(value(2)=="{1}E{:=-3} /m^3","Signed exponent edit display");
+                key(13); require(value(2)=="{1}E{=-3} /m^3","Signed exponent commit");
+                key('e'); key('1'); key('4'); key(27);
+                require(!host.textEntryActive() && value(2)=="{1}E{=-3} /m^3","Escape cancels without exiting app");
+                key('e'); key('1'); key('4'); key(13);
+                require(value(2)=="{1}E{=14} /m^3","Exponent normalized");
+                key('a'); require(value(2)=="{=1}E{14} /m^3","A selects mantissa without decrement");
+                key('e'); key('2'); key('q');
+                require(value(2)=="{=1}E{14} /m^3","Q cancels without leaving Layer 2");
+                key('s'); require(value(2)=="{1}E{14} /m^3","Unselected density display");
+                auto expectedPopulation = [&](int exponent) {
+                    AtomicInitialization::Population p; std::string error;
+                    require(AtomicInitialization::resolve(AtomicInitialization::DensityType::Electron,1,exponent,.10,
+                        renderer.getSimBoxSize(),p,error),"Expected population resolves");
+                    return p;
+                };
+                const auto reference = expectedPopulation(14);
+                const auto previewLines = host.presentation().postStatusLines;
+                require(previewLines.at(0)=="NEUTRAL ARGON: "+std::to_string(reference.neutralCount) &&
+                    previewLines.at(1)=="IONIZED ARGON: "+std::to_string(reference.ionCount) &&
+                    previewLines.at(2)=="FREE ELECTRONS: "+std::to_string(reference.electronCount) &&
+                    previewLines.at(6)=="FREE SLOTS: "+std::to_string(49152-reference.activeMarkerCount),"Preview populations and reserve match resolution");
+                for(int i=0;i<3;++i) { tick(); require(host.presentation().postStatusLines==previewLines,"Preview does not reroll"); }
                 selectRow("PRESS E TO RUN SIM"); key('e');
                 require(arbiter.getApplicationLayer() == TheArbiter::ApplicationLayer::ACTIVE_WORKSPACE, "Run Atomic");
-                require(host.presentation().runtimeStatus.objectLine.find("1320") != std::string::npos, "1320 markers retain population semantics");
+                require(host.atomicRuntimePopulation().activeMarkerCount==reference.activeMarkerCount &&
+                    host.atomicRuntimePopulation().physicalVolumeM3==reference.physicalVolumeM3 &&
+                    host.atomicRuntimePopulation().expectedHeavyCount==reference.expectedHeavyCount,"Run matches physical preview");
+                key('q');
+                selectRow("DENSITY N"); key('d'); key('e'); key('1'); key('6'); key(13);
+                selectRow("PRESS E TO RUN SIM"); key('e');
+                const auto populated = expectedPopulation(16);
+                require(host.atomicRuntimePopulation().activeMarkerCount==populated.activeMarkerCount,"Changed density resets on Run");
+                require(host.presentation().runtimeStatus.objectLine.find("SIM MARKERS: " + std::to_string(populated.activeMarkerCount) + "/49152") == 0,
+                    "Runtime HUD shows derived count and fixed allocation");
                 tick();
                 auto detail = [&](const std::string& token) {
                     for (const auto& line : host.presentation().runtimeStatus.detailLines)
@@ -559,6 +637,24 @@ int main(int argc, char** argv) {
                 key('1'); fire();
                 require(detail("TEST FIRE:").find("ACTIVE DEBUG: 1/128") != std::string::npos,
                     "Center-ray click creates active electron in Atomic");
+                key('q'); tick();
+                const auto pausedPopulation = host.atomicRuntimePopulation();
+                selectRow("DENSITY N"); key('d'); key('e'); key('2'); key('2'); key(13);
+                require(host.presentation().postStatusLines.empty() && host.presentation().statusTone==WorkspaceStatusTone::Warning,
+                    "Invalid density shows warning instead of bogus preview");
+                selectRow("PRESS E TO RUN SIM"); key('e'); tick();
+                require(arbiter.getApplicationLayer()==TheArbiter::ApplicationLayer::WORKSPACE_CONFIGURATION &&
+                    host.atomicRuntimePopulation().activeMarkerCount==pausedPopulation.activeMarkerCount &&
+                    host.atomicRuntimePopulation().enteredDensityM3==pausedPopulation.enteredDensityM3,
+                    "Invalid Run leaves paused runtime configuration intact");
+                selectRow("DENSITY N"); key('d'); key('e'); key('1'); key('6'); key(13);
+                for(const auto* row : {"PARTICLE SPECIES", "DENSITY TYPE", "INIT. IONIZATION", "INIT. ELECTRON TEMP", "GAS INPUT"}) {
+                    selectRow(row); key('d'); key('a');
+                }
+                selectRow("PRESS E TO RUN SIM"); key('e');
+                require(detail("TEST FIRE:").find("ACTIVE DEBUG: 1/128")!=std::string::npos,
+                    "Changing values back resumes without clearing live diagnostic state");
+                require(host.handleMenuCommand(menuCommand("TEST FIRE")),"Reenable firing after Q");
                 selectVector("ELECTRIC_FIELD");
                 require(detail("FIELD VIEW:").find("SCALE: LOG") != std::string::npos, "Electric field defaults to logarithmic magnitude");
                 const double electricBefore = displayedMagnitude();
@@ -572,7 +668,7 @@ int main(int argc, char** argv) {
                 require(detail("FIELD DISPLAY:").find("CUDA E/SCALAR") != std::string::npos,
                     "CUDA field display active after real drawing");
                 key('h'); tick();
-                require(detail("FIELD DISPLAY:").find("CPU REFERENCE") != std::string::npos &&
+                require(detail("FIELD DISPLAY:").find("CPU DISPLAY OF SI FIELDS") != std::string::npos &&
                     displayedMagnitude() == frozenElectric, "CPU display toggle preserves stored physics");
                 require(host.handleMenuCommand(menuCommand("FIELD DISPLAY")), "Field display menu toggle handled");
                 tick();
@@ -599,12 +695,43 @@ int main(int argc, char** argv) {
                 require(displayedMagnitude() == 0.0, "Clear refreshes electric field to zero");
                 tick();
                 require(cudaDeviceSynchronize() == cudaSuccess, "CUDA runtime synchronization");
+                key('1'); fire();
+                require(detail("TEST FIRE:").find("ACTIVE DEBUG: 1/128")!=std::string::npos,"Live state established before restart test");
                 key('q'); tick();
                 require(host.menu().items.empty() && !host.handlePointerInput(
                     arbiter.translateMouseButton(GLUT_LEFT_BUTTON, GLUT_DOWN, 640, 450)),
                     "Layer-3 test firing unavailable after returning to configuration");
+                // A changed physical input restarts only when Run is committed.
+                selectRow("GAS INPUT"); key('d');
+                require(host.atomicRuntimePopulation().enteredDensityM3==populated.enteredDensityM3,"Editing preserves runtime");
+                selectRow("PRESS E TO RUN SIM"); key('e');
+                require(detail("TEST FIRE:").find("ACTIVE DEBUG: 0/128")!=std::string::npos,"Changed temperature starts fresh runtime");
+                require(host.handleMenuCommand(menuCommand("TEST FIRE")),"Enable firing before full reset test");
+                key('1'); fire();
+                key('q'); selectRow("GAS INPUT"); key('a');
                 key('q'); tick();
-                std::printf("PASS: Atomic size %d, independent field grid, 66 spawn choices, firing, dynamic E/B, CPU/CUDA field drawing\n",
+                selectRow("CONFIGURE WORKSPACE"); key('e');
+                require(host.atomicRuntimePopulation().activeMarkerCount==0,"Layer-1 Configure clears full runtime");
+                selectRow("PRESS E TO RUN SIM"); key('e');
+                require(detail("TEST FIRE:").find("ACTIVE DEBUG: 0/128")!=std::string::npos,"Full Configure reset clears diagnostic sources");
+                key('q');
+                if (renderer.getSimBoxSize()==32) {
+                    selectRow("DENSITY N"); key('d'); key('e'); key('0'); key(13);
+                    key('a'); key('e');
+                    for(unsigned char c:TextEntrySession::formatReal(21000.0/AtomicInitialization::physicalVolumeM3(32))) key(c);
+                    key(13);
+                    selectRow("INIT. IONIZATION"); for(int i=0;i<90;++i) key('d');
+                    require(host.presentation().postStatusLines.at(6)=="FREE SLOTS: 7152","Full-ionization reserve preview");
+                    selectRow("PRESS E TO RUN SIM"); key('e'); tick();
+                    require(host.atomicRuntimePopulation().heavyCount==21000 && host.atomicRuntimePopulation().activeMarkerCount==42000,
+                        "Full supported ion/electron population runs and renders");
+                    key('q');
+                    selectRow("INIT. IONIZATION"); for(int i=0;i<90;++i) key('a');
+                    selectRow("DENSITY N"); key('a'); key('e'); key('1'); key(13);
+                    key('d'); key('e'); key('1'); key('6'); key(13);
+                }
+                key('q');
+                std::printf("PASS: Atomic size %d, physical density initialization/editor, whole-domain spawn, firing, dynamic E/B, CPU/CUDA field drawing\n",
                     renderer.getSimBoxSize());
             };
             runAtomic();

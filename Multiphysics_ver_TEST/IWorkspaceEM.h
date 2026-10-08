@@ -27,6 +27,8 @@ public:
         WorkspaceServices& services) = 0;
 
     virtual WorkspacePresentation buildPresentation() const = 0;
+    // Active numeric/text sessions consume raw keys, including Escape.
+    virtual bool textEntryActive() const { return false; }
 
     virtual WorkspaceMenuPresentation buildMenu() const {
         return WorkspaceMenuPresentation{};

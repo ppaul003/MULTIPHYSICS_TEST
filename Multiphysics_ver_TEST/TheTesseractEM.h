@@ -44,6 +44,8 @@ public:
     void renderOverlay(const WorkspaceFrameContext& frame);
 
     WorkspacePresentation presentation() const;
+    bool textEntryActive() const { return m_activeWorkspace && m_activeWorkspace->textEntryActive(); }
+    const AtomicInitialization::Population& atomicRuntimePopulation() const { return m_atomicParticlesSimWorkspace.runtimePopulation(); }
     WorkspaceMenuPresentation menu() const;
     bool handleMenuCommand(int command);
 

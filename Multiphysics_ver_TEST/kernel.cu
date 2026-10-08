@@ -112,20 +112,23 @@ extern "C" {
 		numThreads = min(blockSize, n);
 		numBlocks = iDivUp(n, numThreads);
 	}
-	void integrateSystem(float* pos, float* vel, float* acc, float deltaTime, uint numParticles) {
+	void integrateSystem(float* pos, float* vel, float* acc, float deltaTime, uint numParticles, const ParticleFieldMarker* markers) {
+        if (!numParticles || !markers || !std::isfinite(deltaTime) || deltaTime <= 0) return;
 
 		thrust::device_ptr<float4> d_pos4((float4*)pos);
 		thrust::device_ptr<float4> d_vel4((float4*)vel);
 		thrust::device_ptr<float4> d_acc4((float4*)acc);
+        thrust::device_ptr<const ParticleFieldMarker> d_markers(markers);
 
 		thrust::for_each(
-			thrust::make_zip_iterator(thrust::make_tuple(d_pos4, d_vel4, d_acc4)),
-			thrust::make_zip_iterator(thrust::make_tuple(d_pos4 + numParticles, d_vel4 + numParticles, d_acc4 + numParticles)),
+			thrust::make_zip_iterator(thrust::make_tuple(d_pos4, d_vel4, d_acc4, d_markers)),
+			thrust::make_zip_iterator(thrust::make_tuple(d_pos4 + numParticles, d_vel4 + numParticles, d_acc4 + numParticles, d_markers + numParticles)),
 			integrate_functor(deltaTime));
 	}
 
 	void forcesKernel(float* pos, float* acc, int numParticles) {
-		uint numThreads = min((uint)256, numParticles);
+		if (numParticles <= 0) return;
+        uint numThreads = min((uint)256, numParticles);
 		uint numBlocks = iDivUp(numParticles, numThreads);
 
 		size_t smSz = numThreads * sizeof(float4);
@@ -133,6 +136,7 @@ extern "C" {
 		calculate_forces << <numBlocks, numThreads, smSz >> > ((float4*)pos, (float4*)acc, numParticles);
 	}
 	void calcHash(uint* gridParticleHash, uint* gridParticleIndex, float* pos, int numParticles) {
+        if (numParticles <= 0) return;
 
 		uint numThreads, numBlocks;
 		computeGridSize(numParticles, 256, numBlocks, numThreads);
@@ -142,6 +146,7 @@ extern "C" {
 
 	void reorderDataAndFindCellStart(uint* cellStart, uint* cellEnd, float* sortedPos, float* sortedVel, uint* gridParticleHash, uint* gridParticleIndex,
 		float* oldPos, float* oldVel, uint numParticles, uint numCells) {
+        if (!numParticles) return;
 
 		uint numThreads, numBlocks;
 		computeGridSize(numParticles, 256, numBlocks, numThreads);
@@ -174,6 +179,7 @@ extern "C" {
 
 	void collide(float* newVel, float* sortedPos, float* sortedVel, uint* gridParticleIndex,
 		uint* cellStart, uint* cellEnd, uint numParticles, uint numCells) {
+        if (!numParticles) return;
 
 #if USE_TEX
 		cudaBindTexture(0, oldPosTex, sortedPos, numParticles * sizeof(float4));
@@ -214,6 +220,7 @@ extern "C" {
 }
 // <FIELD SYSTEM HOST LAUNCHERS>
 bool validFieldGrid(const FieldGridParams& g) {
+    if (!std::isfinite(g.metersPerWorldUnit) || g.metersPerWorldUnit <= 0) return false;
     const unsigned limit = 2147483647u / (kFieldGlyphVerticesPerCell * sizeof(FieldGlyphVertex)); // legacy GL buffer-size query
     if (!g.dimensions.x || !g.dimensions.y || !g.dimensions.z ||
         g.dimensions.x > limit || g.dimensions.y > limit || g.dimensions.z > limit) return false;
@@ -225,7 +232,8 @@ bool validFieldGrid(const FieldGridParams& g) {
     const unsigned dims[] = {g.dimensions.x, g.dimensions.y, g.dimensions.z};
     for (int axis=0; axis<3; ++axis) {
         if (!std::isfinite(origins[axis]) || !std::isfinite(sizes[axis]) || sizes[axis] <= 0 ||
-            !std::isfinite(origins[axis] + sizes[axis] * dims[axis])) return false;
+            !std::isfinite(origins[axis] + sizes[axis] * dims[axis]) ||
+            !std::isfinite(sizes[axis] * g.metersPerWorldUnit) || sizes[axis] * g.metersPerWorldUnit < 1e-100) return false;
     }
     return true;
 }
@@ -310,9 +318,9 @@ bool solvePoissonJacobi(const float* rho, float* phiA, float* phiB,
     return oldPhi==phiA || cudaMemcpy(phiA,oldPhi,size_t(grid.cellCount)*sizeof(float),
         cudaMemcpyDeviceToDevice)==cudaSuccess;
 }
-bool computeFieldElectric(const float* phi, float4* electric, const FieldGridParams& grid) {
+bool computeFieldElectric(const float* phi, float4* electric, const FieldGridParams& grid, bool groundedFaces) {
     if (!phi || !electric || !setFieldGridParameters(&grid)) return false;
-    electricFieldFromPotentialD<<<(grid.cellCount+255)/256,256>>>(phi,electric);
+    electricFieldFromPotentialD<<<(grid.cellCount+255)/256,256>>>(phi,electric,groundedFaces);
     return cudaGetLastError()==cudaSuccess;
 }
 
@@ -396,3 +404,43 @@ bool buildFieldRenderBuffers(const float4* electric, const float* scalar,
     return ok && unmapped;
 }
 
+
+// Integration launchers deliberately use the existing default stream.
+bool initializeParticleAcceleration(float4* acceleration,const ParticleFieldMarker* markers,unsigned count) {
+    if(count>49152||(!acceleration && count)||(!markers && count)) return false;
+    if(count) initializeAccelerationD<<<(count+255)/256,256>>>(acceleration,markers,count);
+    return cudaGetLastError()==cudaSuccess;
+}
+bool computeContactAcceleration(float4* acceleration,const float4* pos,const float4* vel,
+    const unsigned* indices,const unsigned* start,const unsigned* end,
+    const ParticleFieldMarker* markers,unsigned count) {
+    if(count>49152) return false;
+    if(!count) return true;
+    if(!acceleration||!pos||!vel||!indices||!start||!end||!markers) return false;
+    contactAccelerationD<<<(count+127)/128,128>>>(acceleration,pos,vel,indices,start,end,markers,count);
+    return cudaGetLastError()==cudaSuccess;
+}
+bool computeDirectCoulomb(const float4* pos,const ParticleFieldMarker* markers,float4* acceleration,
+    unsigned count,ElectrostaticMode mode,double softeningM) {
+    // Never permit an accidental production all-pairs launch or duplicate self E.
+    if(mode!=ElectrostaticMode::DirectCoulombDebug||count>2048||!std::isfinite(softeningM)||softeningM<=0) return false;
+    if(!count) return true;
+    if(!pos||!markers||!acceleration) return false;
+    directCoulombD<<<(count+127)/128,128>>>(pos,markers,acceleration,count,softeningM);
+    return cudaGetLastError()==cudaSuccess;
+}
+bool depositParticleFields(const float4* pos,const float4* vel,const ParticleFieldMarker* markers,
+    unsigned count,FieldBuffers& b,const FieldGridParams& grid) {
+    if(count>49152||!setFieldGridParameters(&grid)||!b.chargeDensity||!b.currentDensity) return false;
+    if(count && (!pos||!vel||!markers)) return false;
+    if(!clearScalarField(b.chargeDensity,grid.cellCount)||!clearVectorField(b.currentDensity,grid.cellCount)) return false;
+    if(count) depositChargeCurrentD<<<(count+255)/256,256>>>(pos,vel,markers,b.chargeDensity,b.currentDensity,count);
+    return cudaGetLastError()==cudaSuccess;
+}
+bool addUniformField(float4* e,float4* b,const FieldGridParams& grid,const UniformEMField& field) {
+    if(!e||!b||!setFieldGridParameters(&grid)) return false;
+    const float v[]={field.electricVm.x,field.electricVm.y,field.electricVm.z,field.magneticT.x,field.magneticT.y,field.magneticT.z};
+    for(float x:v) if(!std::isfinite(x)) return false;
+    if(field.enabled) addUniformFieldD<<<(grid.cellCount+255)/256,256>>>(e,b,field);
+    return cudaGetLastError()==cudaSuccess;
+}

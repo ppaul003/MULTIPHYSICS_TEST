@@ -73,7 +73,7 @@ public:
 public:
     TheArbiter();
 
-    ArbiterResult routeKeyboard(const KeyboardInput::KeyEvent& event) const;
+    ArbiterResult routeKeyboard(const KeyboardInput::KeyEvent& event, bool textEntryActive = false) const;
     WorkspacePointerEvent translateMouseButton(int button, int state, int x, int y) const;
     WorkspacePointerEvent translateMouseMotion(int x, int y, int dx, int dy) const;
 

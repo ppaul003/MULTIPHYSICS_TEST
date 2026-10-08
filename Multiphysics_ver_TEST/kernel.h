@@ -37,7 +37,7 @@ extern "C" {
     /// <PARTICLE SYSTEM CUDA SOLVER>
     ///-----------------------------------------------------------------------------------------
     void setParameters(ParticleSimParams* hostParams);
-    void integrateSystem(float* pos, float* vel, float* acc, float deltaTime, unsigned int numParticles);
+    void integrateSystem(float* pos, float* vel, float* acc, float deltaTime, unsigned int numParticles, const ParticleFieldMarker* markers);
     void forcesKernel(float* pos, float* acc, int numParticles);
     void calcHash(unsigned int* gridParticleHash, unsigned int* gridParticleIndex, float* pos, int numParticles);
 
@@ -59,6 +59,16 @@ extern "C" {
 #ifdef __cplusplus
 }
 
+// Default-stream additive acceleration operations. Device pointers, SI output.
+bool initializeParticleAcceleration(float4* acceleration,const ParticleFieldMarker* markers,unsigned count);
+bool computeContactAcceleration(float4* acceleration,const float4* sortedPos,const float4* sortedVel,
+    const unsigned* indices,const unsigned* cellStart,const unsigned* cellEnd,
+    const ParticleFieldMarker* markers,unsigned count);
+bool computeDirectCoulomb(const float4* positions,const ParticleFieldMarker* markers,
+    float4* acceleration,unsigned count,ElectrostaticMode mode,double softeningM);
+bool depositParticleFields(const float4* positions,const float4* velocities,
+    const ParticleFieldMarker* markers,unsigned count,FieldBuffers& buffers,const FieldGridParams& grid);
+bool addUniformField(float4* electric,float4* magnetic,const FieldGridParams& grid,const UniformEMField& source);
 // <FIELD SYSTEM HOST INTERFACE>
 // Single context thread, default stream. Each launcher uploads its owner's grid
 // (and solver where needed), so alternating FieldSystem instances cannot use
@@ -74,7 +84,7 @@ bool clearScalarField(float* field, unsigned count);
 bool clearVectorField(float4* field, unsigned count);
 bool solvePoissonJacobi(const float* rho, float* phiA, float* phiB,
     const FieldGridParams& grid, const FieldSolverParams& solver);
-bool computeFieldElectric(const float* phi, float4* electric, const FieldGridParams& grid);
+bool computeFieldElectric(const float* phi, float4* electric, const FieldGridParams& grid, bool groundedFaces = false);
 bool normalizeFieldWave(AnalyticWaveParams& wave);
 bool addAnalyticWave(float4* electric, float4* magnetic,
     const FieldGridParams& grid, const AnalyticWaveParams& wave, double time);
